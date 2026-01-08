@@ -8,31 +8,31 @@ const client = twilio(accountSid, authToken);
 /**
  * Envía mensaje con botones usando Content Template
  * @param {string} toNumber - Número destino (formato: whatsapp:+34XXXXXXXXX)
- * @param {string} fromNumber - Tu número de WhatsApp (formato: whatsapp:+14155238886)
- * @param {string} contentSid - El SID del Content Template (empieza con HX...)
+ * @param {string} fromNumber - número de WhatsApp (formato: whatsapp:+14155238886)
+ * @param {string} contentSid - El SID del Content Template
  */
-async function sendTemplateMessage(toNumber, fromNumber, contentSid) {
+
+async function sendTemplateMessage(toNumber, fromNumber, contentSid, variables = null) {
   try {
-    const message = await client.messages.create({
+    const payload = {
       from: fromNumber,
       to: toNumber,
       contentSid: contentSid,
-      // Si tu template tiene variables, añádelas aquí:
-      // contentVariables: JSON.stringify({
-      //   1: 'Valor variable 1',
-      //   2: 'Valor variable 2'
-      // })
-    });
-    
+    };
+
+    if (variables) {
+      payload.contentVariables = JSON.stringify(variables);
+    }
+
+    const message = await client.messages.create(payload);
+
     console.log('✅ Mensaje con botones enviado:', message.sid);
     console.log('📱 Enviado a:', toNumber);
     console.log('📅 Estado:', message.status);
     return message;
   } catch (error) {
     console.error('❌ Error enviando mensaje:', error.message);
-    if (error.code) {
-      console.error('Código de error:', error.code);
-    }
+    if (error.code) console.error('Código de error:', error.code);
     throw error;
   }
 }

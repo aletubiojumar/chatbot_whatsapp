@@ -1,4 +1,7 @@
 const responses = {
+  // MENSAJE FUERA DE HORARIO
+  closedMessage: `Hola, ahora mismo estamos cerrados, te atenderemos entre las 8:00 am y las 21:00. Un saludo`,
+
   // ETAPA INICIAL - Identificación del asegurado
   initialMessage: `Buenos días, Le contactamos desde el gabinete pericial del seguro del hogar por un siniestro comunicado.
 
@@ -8,17 +11,11 @@ Por favor, responda con el número de la opción:
 2️⃣ No soy el asegurado/a  
 3️⃣ Ahora no puedo atender`,
 
-  aseguradoConfirmado: `Gracias.
-Le escribimos para gestionar la intervención pericial del siniestro comunicado a su seguro.
-¿Comprende el motivo de este contacto?
+  // Respuesta cuando dice "No soy el asegurado"
+  noEsAsegurado: `Ha sido un error, disculpe las molestias. Un saludo.`,
 
-Por favor responda:
-- Sí
-- No`,
-
-  noEsAsegurado: `Se procederá a la llamada por parte del perito al asegurado. Un saludo.`,
-
-  ocupado: `Sin problema, entendemos que está ocupado/a. Le volveremos a contactar más tarde.`,
+  // Respuesta cuando dice "Ahora no puedo atender"
+  ocupado: `Sin problema, entendemos que está ocupado/a. Le volveremos a contactar en 6 horas.`,
 
   initialStageHelp: `Por favor, responda con una de estas opciones:
 
@@ -26,22 +23,35 @@ Por favor responda:
 2️⃣ No soy el asegurado/a  
 3️⃣ Ahora no puedo atender`,
 
-  // ETAPA 2 - Comprensión del motivo
-  comprendeMotivo: `Perfecto, gracias por confirmar.
+  // ETAPA 2 - Verificación de datos (se envía con template de botones)
+  datosCorrectos: `Perfecto, gracias por confirmar los datos.
 
 Un perito se pondrá en contacto con usted en las próximas 24-48 horas para coordinar la visita y evaluar el siniestro.
 
 Si tiene alguna duda, no dude en contactarnos. ¡Que tenga un buen día!`,
 
-  noComprendeMotivo: `Entendemos. Le explicaremos con más detalle:
+  pedirDatosCorregidos: `De acuerdo. Por favor, indíquenos los datos corregidos en un solo mensaje.
 
-Ha comunicado un siniestro en su seguro del hogar y necesitamos que un perito profesional visite su propiedad para evaluar los daños y poder gestionar su reclamación.
+Ejemplo:
+- Dirección: ...
+- Fecha de ocurrencia: ...
+- Nombre del asegurado: ...`,
 
-Un perito se pondrá en contacto con usted próximamente para explicarle todo el proceso. Un saludo.`,
+  confirmarDatosCorregidos: (texto) => `Perfecto. Estos son los datos corregidos que nos ha indicado:
+
+${texto}
+
+¿Son correctos?
+
+Responda:
+- Sí
+- No`,
+
+  datosIncorrectos: `Ha sido un error, disculpe las molestias. Un saludo.`,
 
   identityConfirmedStageHelp: `Por favor, responda:
-- Sí (si comprende el motivo del contacto)
-- No (si necesita más información)`,
+- Sí, son correctos
+- No, hay algún error`,
 
   // RECORDATORIOS
   reminder: `Buenos días, Le contactamos nuevamente desde el gabinete pericial del seguro del hogar por un siniestro comunicado.
@@ -57,9 +67,7 @@ Un perito se pondrá en contacto con usted próximamente para explicarle todo el
 Un saludo.`,
 
   // MENSAJES GENERALES
-  conversacionFinalizada: `Gracias por su tiempo. La conversación ha finalizado. 
-
-Si necesita algo más, por favor contáctenos.`,
+  conversacionFinalizada: `Gracias por su tiempo. La conversación ha finalizado.`,
 
   default: `No he entendido su respuesta. Por favor, responda según las opciones indicadas.`
 };

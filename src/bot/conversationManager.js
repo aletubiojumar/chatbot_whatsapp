@@ -94,7 +94,10 @@ function recordResponse(phoneNumber, message, type = 'user') {
     });
 
     conversation.lastMessageAt = Date.now();
+    
+    if (type === 'user' && conversation.status === 'pending') {
     conversation.status = 'responded';
+  }
 
     return createOrUpdateConversation(phoneNumber, conversation);
 }
@@ -159,7 +162,54 @@ function advanceStage(phoneNumber, newStage) {
     });
 }
 
+// conversationManager.js (añadir al module.exports)
+function setSnoozed(phoneNumber, untilMs) {
+  return createOrUpdateConversation(phoneNumber, {
+    status: 'snoozed',
+    nextReminderAt: untilMs,
+    attempts: 0
+  });
+}
+
+function clearSnoozed(phoneNumber) {
+  return createOrUpdateConversation(phoneNumber, {
+    status: 'pending',
+    nextReminderAt: null,
+    attempts: 0
+  });
+}
+
+function queueOutbound(phoneNumber, payload, sendAtMs) {
+  return createOrUpdateConversation(phoneNumber, {
+    pendingOutbound: payload,
+    pendingSendAt: sendAtMs
+  });
+}
+
+function dequeueOutbound(phoneNumber) {
+  return createOrUpdateConversation(phoneNumber, {
+    pendingOutbound: null,
+    pendingSendAt: null
+  });
+}
+
+function getConversationsWithPendingOutbound() {
+  const conversations = getConversations();
+  const now = Date.now();
+  return Object.values(conversations).filter(c =>
+    c.pendingOutbound &&
+    c.pendingSendAt &&
+    c.pendingSendAt <= now
+  );
+}
+
+
 module.exports = {
+    clearSnoozed,
+    setSnoozed,
+    queueOutbound,
+    dequeueOutbound,
+    getConversationsWithPendingOutbound,
     createOrUpdateConversation,
     getConversation,
     recordResponse,
