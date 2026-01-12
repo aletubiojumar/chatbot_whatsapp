@@ -8,7 +8,13 @@ const { startInactivityScheduler } = require('./inactivityHandler');
 const conversationManager = require('./conversationManager');
 const responses = require('./responses');
 
-const { sendVerificationTemplate, sendAttendeeTemplate, sendCorrectionTemplate, sendAppointmentTemplate } = require('./templateSender');
+const {
+  sendVerificationTemplate,
+  sendAttendeeTemplate,
+  sendCorrectionTemplate,
+  sendAppointmentTemplate
+} = require('./templateSender');
+
 const { isWithinSendWindow } = require('./timeWindow');
 
 const app = express();
@@ -37,7 +43,8 @@ app.post('/webhook', async (req, res) => {
 
     // ✅ Fuera de horario: responder SIEMPRE "cerrados" y NO procesar flujo
     if (!isWithinSendWindow()) {
-      const closedText = responses.closedMessage ||
+      const closedText =
+        responses.closedMessage ||
         'Hola, ahora mismo estamos cerrados, te atenderemos entre las 8:00 am y las 21:00. Un saludo.';
 
       const twimlClosed = generateTwiMLResponse(closedText);
@@ -52,41 +59,52 @@ app.post('/webhook', async (req, res) => {
     const conversation = conversationManager.getConversation(senderNumber);
     console.log(`📊 Estado de conversación:`, {
       stage: conversation?.stage,
-      status: conversation?.status
+      status: conversation?.status,
+      lastPromptType: conversation?.lastPromptType
     });
 
-    //Envío de template verificación (mensaje2)
+    // =========================
+    // ENVÍO DE TEMPLATES (BOTONES)
+    // =========================
+
+    // 1) Template verificación (mensaje2)
     if (conversation && conversation.status === 'awaiting_verification' && conversation.stage === 'identity_confirmed') {
       console.log(`🚀 Condición cumplida. Enviando template de verificación...`);
 
-      // Evitar dobles envíos por reintentos
-      conversationManager.createOrUpdateConversation(senderNumber, { status: 'responded' });
+      // Evitar dobles envíos por reintentos + marcar prompt de botones
+      conversationManager.createOrUpdateConversation(senderNumber, {
+        status: 'responded',
+        lastPromptType: 'buttons'
+      });
 
       setTimeout(async () => {
         try {
           await sendVerificationTemplate(senderNumber);
+          conversationManager.recordResponse(senderNumber, '[Template: verificación]', 'bot');
         } catch (error) {
           console.error('❌ Error enviando template verificación:', error);
           conversationManager.createOrUpdateConversation(senderNumber, { status: 'awaiting_verification' });
         }
       }, 300);
 
-      // Respondemos vacío para no mandar texto adicional
       const twiml = generateTwiMLResponse(' ');
       res.type('text/xml');
       return res.send(twiml);
     }
 
-    //Envío de template quién atenderá (mensaje4)
+    // 2) Template quién atenderá (mensaje4)
     if (conversation && conversation.status === 'awaiting_attendee' && conversation.stage === 'attendee_select') {
       console.log(`🚀 Condición cumplida. Enviando template de quién atenderá al perito (mensaje4)...`);
 
-      // Evitar dobles envíos por reintentos
-      conversationManager.createOrUpdateConversation(senderNumber, { status: 'responded' });
+      conversationManager.createOrUpdateConversation(senderNumber, {
+        status: 'responded',
+        lastPromptType: 'buttons'
+      });
 
       setTimeout(async () => {
         try {
           await sendAttendeeTemplate(senderNumber);
+          conversationManager.recordResponse(senderNumber, '[Template: quién atenderá]', 'bot');
         } catch (error) {
           console.error('❌ Error enviando template mensaje4:', error);
           conversationManager.createOrUpdateConversation(senderNumber, { status: 'awaiting_attendee' });
@@ -98,12 +116,18 @@ app.post('/webhook', async (req, res) => {
       return res.send(twiml);
     }
 
-    //Envío de template pedir correcciones (mensaje_corregir)
-    if (conversation && conversation.status === 'awaiting_correction_confirmation' && conversation.stage === 'confirming_corrections') {
+    // 3) Template confirmación correcciones (mensaje_corregir)
+    if (
+      conversation &&
+      conversation.status === 'awaiting_correction_confirmation' &&
+      conversation.stage === 'confirming_corrections'
+    ) {
       console.log(`🚀 Enviando template mensaje_corregir (confirmación datos corregidos)...`);
 
-      // evitar dobles envíos por retries
-      conversationManager.createOrUpdateConversation(senderNumber, { status: 'responded' });
+      conversationManager.createOrUpdateConversation(senderNumber, {
+        status: 'responded',
+        lastPromptType: 'buttons'
+      });
 
       const vars = {
         direccion: conversation.correctedDireccion || '',
@@ -115,6 +139,7 @@ app.post('/webhook', async (req, res) => {
         try {
           console.log('🧩 vars mensaje_corregir:', vars);
           await sendCorrectionTemplate(senderNumber, vars);
+          conversationManager.recordResponse(senderNumber, '[Template: correcciones]', 'bot');
         } catch (error) {
           console.error('❌ Error enviando template mensaje_corregir:', error);
           conversationManager.createOrUpdateConversation(senderNumber, { status: 'awaiting_correction_confirmation' });
@@ -126,15 +151,19 @@ app.post('/webhook', async (req, res) => {
       return res.send(twiml);
     }
 
+    // 4) Template cita (mensaje_cita)
     if (conversation && conversation.status === 'awaiting_appointment' && conversation.stage === 'appointment_select') {
       console.log(`🚀 Condición cumplida. Enviando template mensaje_cita...`);
 
-      // evitar doble envío por retries
-      conversationManager.createOrUpdateConversation(senderNumber, { status: 'responded' });
+      conversationManager.createOrUpdateConversation(senderNumber, {
+        status: 'responded',
+        lastPromptType: 'buttons'
+      });
 
       setTimeout(async () => {
         try {
           await sendAppointmentTemplate(senderNumber);
+          conversationManager.recordResponse(senderNumber, '[Template: cita]', 'bot');
         } catch (error) {
           console.error('❌ Error enviando template mensaje_cita:', error);
           conversationManager.createOrUpdateConversation(senderNumber, { status: 'awaiting_appointment' });
@@ -150,7 +179,6 @@ app.post('/webhook', async (req, res) => {
     const twimlResponse = generateTwiMLResponse(responseText || ' ');
     res.type('text/xml');
     return res.send(twimlResponse);
-
   } catch (error) {
     console.error('❌ Error procesando mensaje:', error);
     const errorResponse = generateTwiMLResponse('Lo siento, hubo un error. Por favor intenta de nuevo.');
