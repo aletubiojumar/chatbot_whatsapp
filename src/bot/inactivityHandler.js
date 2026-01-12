@@ -233,7 +233,7 @@ function startInactivityScheduler() {
     } catch (error) {
       console.error('❌ Error en scheduler de inactividad:', error);
     }
-  }, 30 * 60 * 1000); // 30 minutos
+  }, 1 * 60 * 1000); // 30 minutos
 }
 
 module.exports = {
