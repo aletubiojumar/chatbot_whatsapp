@@ -4,6 +4,7 @@ require('dotenv').config();
 
 const { processMessage, generateTwiMLResponse } = require('./messageHandler');
 const { startReminderScheduler } = require('./reminderScheduler');
+const { startInactivityScheduler } = require('./inactivityHandler');
 const conversationManager = require('./conversationManager');
 const responses = require('./responses');
 
@@ -158,8 +159,9 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// ✅ Scheduler se inicia UNA sola vez, fuera del webhook
+// ✅ Schedulers se inician UNA sola vez, fuera del webhook
 startReminderScheduler();
+startInactivityScheduler();
 
 // Servidor
 app.listen(PORT, () => {

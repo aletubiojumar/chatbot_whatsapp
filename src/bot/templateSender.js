@@ -6,6 +6,7 @@ const MENSAJE2_SID = process.env.MENSAJE2_SID
 const MENSAJE4_SID = process.env.MENSAJE4_SID
 const MENSAJE_CITA_SID = process.env.MENSAJE_CITA_SID
 const MENSAJE_CORREGIR_SID = process.env.MENSAJE_CORREGIR_SID
+const MENSAJE_AUSENCIA_SID = process.env.MENSAJE_AUSENCIA_SID
 
 async function sendVerificationTemplate(toNumber) {
   await sendTemplateMessage(toNumber, FROM_NUMBER, MENSAJE2_SID);
@@ -32,9 +33,16 @@ async function sendAppointmentTemplate(toNumber) {
   return true;
 }
 
+async function sendContinuationTemplate(toNumber) {
+  await sendTemplateMessage(toNumber, FROM_NUMBER, MENSAJE_AUSENCIA_SID);
+  console.log(`✅ Template mensaje_ausencia enviado a ${toNumber}`);
+  return true;
+}
+
 module.exports = {
   sendVerificationTemplate,
   sendAttendeeTemplate,
   sendCorrectionTemplate,
-  sendAppointmentTemplate
+  sendAppointmentTemplate,
+  sendContinuationTemplate
 };

@@ -203,6 +203,75 @@ function getConversationsWithPendingOutbound() {
   );
 }
 
+/**
+ * Obtener conversaciones inactivas
+ * - El usuario respondió (status !== 'pending')
+ * - No está en estado completed, escalated, o awaiting_continuation
+ * - Han pasado más de {timeout}ms desde el último mensaje del USUARIO
+ * - Aún no se ha enviado el mensaje de continuación
+ */
+function getInactiveConversations(inactivityTimeout) {
+  const conversations = getConversations();
+  const now = Date.now();
+
+  return Object.values(conversations).filter(conv => {
+    // Excluir conversaciones completadas o escaladas
+    if (conv.status === 'completed' || 
+        conv.status === 'escalated' || 
+        conv.status === 'awaiting_continuation' ||
+        conv.status === 'expired_no_continuation' ||
+        conv.status === 'user_declined_continuation') {
+      return false;
+    }
+
+    // Solo conversaciones donde el usuario ha respondido al menos una vez
+    if (conv.status === 'pending') {
+      return false;
+    }
+
+    // Si ya tiene programada una verificación de inactividad futura, esperarla
+    if (conv.inactivityCheckAt && conv.inactivityCheckAt > now) {
+      return false;
+    }
+
+    // Si ya se envió mensaje de continuación, no volver a enviar
+    if (conv.continuationAskedAt) {
+      return false;
+    }
+
+    // Verificar si hay respuestas del usuario
+    if (!conv.responses || conv.responses.length === 0) {
+      return false;
+    }
+
+    // Encontrar el último mensaje del USUARIO (no del bot)
+    const userMessages = conv.responses.filter(r => r.type === 'user');
+    if (userMessages.length === 0) {
+      return false;
+    }
+
+    const lastUserMessage = userMessages[userMessages.length - 1];
+    const timeSinceLastUserMessage = now - lastUserMessage.timestamp;
+
+    // Si han pasado más de {inactivityTimeout} desde el último mensaje del usuario
+    return timeSinceLastUserMessage >= inactivityTimeout;
+  });
+}
+
+/**
+ * Obtener conversaciones donde expiró el tiempo de espera de continuación
+ * - Se envió mensaje "¿Desea continuar?" pero no respondió en 2h
+ */
+function getExpiredContinuations() {
+  const conversations = getConversations();
+  const now = Date.now();
+
+  return Object.values(conversations).filter(conv =>
+    conv.status === 'awaiting_continuation' &&
+    conv.continuationTimeoutAt &&
+    conv.continuationTimeoutAt <= now
+  );
+}
 
 module.exports = {
     clearSnoozed,
@@ -210,6 +279,8 @@ module.exports = {
     queueOutbound,
     dequeueOutbound,
     getConversationsWithPendingOutbound,
+    getInactiveConversations,
+    getExpiredContinuations,
     createOrUpdateConversation,
     getConversation,
     recordResponse,

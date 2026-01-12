@@ -1,9 +1,16 @@
 const twilio = require('twilio');
-require('dotenv').config();
 
-const accountSid = process.env.TWILIO_ACCOUNT_SID;
-const authToken = process.env.TWILIO_AUTH_TOKEN;
-const client = twilio(accountSid, authToken);
+// Función para obtener el cliente de Twilio
+function getClient() {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+
+  if (!accountSid || !authToken) {
+    throw new Error('Las credenciales de Twilio no están configuradas. Verifica tu archivo .env');
+  }
+
+  return twilio(accountSid, authToken);
+}
 
 /**
  * Envía mensaje con botones usando Content Template
@@ -14,13 +21,15 @@ const client = twilio(accountSid, authToken);
 
 async function sendTemplateMessage(toNumber, fromNumber, contentSid, variables = null) {
   try {
+    const client = getClient();
+
     const payload = {
       from: fromNumber,
       to: toNumber,
       contentSid: contentSid,
     };
 
-    if (variables) {
+    if (variables && Object.keys(variables).length > 0) {
       payload.contentVariables = JSON.stringify(variables);
     }
 
@@ -42,6 +51,8 @@ async function sendTemplateMessage(toNumber, fromNumber, contentSid, variables =
  */
 async function sendSimpleMessage(toNumber, fromNumber) {
   try {
+    const client = getClient();
+
     const messageBody = `Buenos días, Le contactamos desde el gabinete pericial del seguro del hogar por un siniestro comunicado.
 
 Por favor, responda con el número de la opción:
@@ -55,7 +66,7 @@ Por favor, responda con el número de la opción:
       body: messageBody,
       to: toNumber
     });
-    
+
     console.log('✅ Mensaje simple enviado:', message.sid);
     console.log('📱 Enviado a:', toNumber);
     return message;
@@ -70,8 +81,10 @@ Por favor, responda con el número de la opción:
  */
 async function listContentTemplates() {
   try {
+    const client = getClient();
+
     const contents = await client.content.v1.contents.list({ limit: 20 });
-    
+
     console.log('\n📋 Content Templates disponibles:\n');
     contents.forEach((content) => {
       console.log(`- Nombre: ${content.friendlyName}`);
@@ -79,7 +92,7 @@ async function listContentTemplates() {
       console.log(`  Tipo: ${content.types ? Object.keys(content.types).join(', ') : 'N/A'}`);
       console.log('---');
     });
-    
+
     return contents;
   } catch (error) {
     console.error('❌ Error listando templates:', error.message);
@@ -92,12 +105,14 @@ async function listContentTemplates() {
  */
 async function sendSimpleMessageWithText(toNumber, fromNumber, messageText) {
   try {
+    const client = getClient();
+
     const message = await client.messages.create({
       from: fromNumber,
       body: messageText,
       to: toNumber
     });
-    
+
     console.log('✅ Mensaje enviado:', message.sid);
     return message;
   } catch (error) {
@@ -109,5 +124,6 @@ async function sendSimpleMessageWithText(toNumber, fromNumber, messageText) {
 module.exports = {
   sendTemplateMessage,
   sendSimpleMessage,
-  listContentTemplates
+  listContentTemplates,
+  sendSimpleMessageWithText
 };

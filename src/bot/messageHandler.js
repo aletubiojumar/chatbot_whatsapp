@@ -93,8 +93,40 @@ function processMessage(incomingMessage, senderNumber) {
     conversation = conversationManager.clearSnoozed(senderNumber);
   }
 
+  console.log('🔍 DEBUG: conversation.status =', conversation.status);
+  console.log('🔍 DEBUG: ¿Es awaiting_continuation?', conversation.status === 'awaiting_continuation');
+
+  // ✅ CRÍTICO: Si está esperando respuesta de continuación, manejar PRIMERO y salir
+  if (conversation.status === 'awaiting_continuation') {
+    const { handleContinuationResponse } = require('./inactivityHandler');
+    const continuationResponse = handleContinuationResponse(incomingMessage, senderNumber);
+
+    if (continuationResponse) {
+      // Registrar mensaje del usuario
+      conversationManager.recordResponse(senderNumber, incomingMessage, 'user');
+      // Registrar respuesta del bot
+      conversationManager.recordResponse(senderNumber, continuationResponse, 'bot');
+
+      console.log('📝 Respuesta de continuación manejada');
+
+      // IMPORTANTE: Retornar inmediatamente sin procesar más
+      return continuationResponse;
+    }
+  }
+
   // Registrar mensaje del usuario
   conversationManager.recordResponse(senderNumber, incomingMessage, 'user');
+
+  // ✅ NUEVO: Limpiar campos de inactividad cuando el usuario responde
+  // Esto permite que la conversación pueda volver a detectarse como inactiva si deja de responder
+  if (conversation.continuationAskedAt || conversation.continuationTimeoutAt || conversation.inactivityCheckAt) {
+    conversationManager.createOrUpdateConversation(senderNumber, {
+      continuationAskedAt: null,
+      continuationTimeoutAt: null,
+      inactivityCheckAt: null
+    });
+    console.log('🔄 Campos de inactividad limpiados - conversación reactivada');
+  }
 
   let response;
 
