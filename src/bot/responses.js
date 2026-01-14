@@ -3,13 +3,13 @@ const responses = {
   // =========================
   // FUERA DE HORARIO
   // =========================
-  closedMessage: `Hola, ahora mismo estamos cerrados, te atenderemos entre las 8:00 am y las 21:00. Un saludo.`,
+  closedMessage: `Ahora estamos cerrados, le atenderemos entre las 8:00 am y las 21:00. Un saludo.`,
 
   // =========================
   // RESPUESTAS DIRECTAS A BOTONES
   // (el botón existe, pero la respuesta textual sigue siendo necesaria)
   // =========================
-  noEsAsegurado: `Ha sido un error, disculpe las molestias. Un saludo.`,
+  noEsAsegurado: `Disculpe las molestias. Un saludo.`,
 
   ocupado: `Sin problema, entendemos que está ocupado/a. Le volveremos a contactar en 6 horas.`,
 

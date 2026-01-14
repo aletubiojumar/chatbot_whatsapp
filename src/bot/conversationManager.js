@@ -3,290 +3,210 @@ const path = require('path');
 
 const CONVERSATIONS_FILE = path.join(__dirname, '../../data/conversations.json');
 
-/**
- * Estructura de una conversación:
- * {
- *   phoneNumber: string,
- *   status: 'pending' | 'responded' | 'completed' | 'escalated',
- *   attempts: number,
- *   lastMessageAt: timestamp,
- *   nextReminderAt: timestamp,
- *   stage: 'initial' | 'identity_confirmed' | 'understands_reason' | 'completed',
- *   responses: [{timestamp, message, type}]
- * }
- */
-
 // Inicializar archivo si no existe
 function initConversationsFile() {
-    const dataDir = path.join(__dirname, '../../data');
-    if (!fs.existsSync(dataDir)) {
-        fs.mkdirSync(dataDir, { recursive: true });
-    }
-    if (!fs.existsSync(CONVERSATIONS_FILE)) {
-        fs.writeFileSync(CONVERSATIONS_FILE, JSON.stringify({}, null, 2));
-    }
+  const dir = path.dirname(CONVERSATIONS_FILE);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+  if (!fs.existsSync(CONVERSATIONS_FILE)) {
+    fs.writeFileSync(CONVERSATIONS_FILE, JSON.stringify({}, null, 2), 'utf8');
+  }
 }
 
-// Leer todas las conversaciones
 function getConversations() {
-    initConversationsFile();
-    const data = fs.readFileSync(CONVERSATIONS_FILE, 'utf8');
-    return JSON.parse(data);
+  initConversationsFile();
+  try {
+    const raw = fs.readFileSync(CONVERSATIONS_FILE, 'utf8');
+    return JSON.parse(raw || '{}');
+  } catch (e) {
+    return {};
+  }
 }
 
-// Guardar conversaciones
 function saveConversations(conversations) {
-    fs.writeFileSync(CONVERSATIONS_FILE, JSON.stringify(conversations, null, 2));
+  initConversationsFile();
+  fs.writeFileSync(CONVERSATIONS_FILE, JSON.stringify(conversations, null, 2), 'utf8');
 }
 
-// Crear o actualizar conversación
 function createOrUpdateConversation(phoneNumber, data) {
-    const conversations = getConversations();
+  const conversations = getConversations();
 
-    if (!conversations[phoneNumber]) {
-        conversations[phoneNumber] = {
-            phoneNumber,
-            status: 'pending',
-            attempts: 0,
-            lastMessageAt: Date.now(),
-            nextReminderAt: Date.now() + (1 * 60 * 1000), // 1 minuto
-            stage: 'initial',
-            responses: [],
-            createdAt: Date.now()
-        };
-    }
-
-    // Actualizar con nueva data - PERO mantener nextReminderAt si no viene en data
-    const updatedData = { ...data };
-
-    // Si data no incluye nextReminderAt, mantener el valor existente
-    if (updatedData.nextReminderAt === undefined && conversations[phoneNumber].nextReminderAt !== undefined) {
-        updatedData.nextReminderAt = conversations[phoneNumber].nextReminderAt;
-    }
-
+  if (!conversations[phoneNumber]) {
     conversations[phoneNumber] = {
-        ...conversations[phoneNumber],
-        ...updatedData,
-        updatedAt: Date.now()
+      phoneNumber,
+      status: 'pending',
+      stage: 'initial',
+      attempts: 0,
+      // OJO: lastMessageAt puede actualizarse con mensajes del bot si se usa recordResponse
+      // Para inactividad real usamos lastUserMessageAt.
+      lastMessageAt: Date.now(),
+      lastUserMessageAt: null,
+      nextReminderAt: null,
+      snoozedUntil: null,
+      history: [],
+      lastPromptType: null,
+      continuationSentAt: null
     };
-
-    saveConversations(conversations);
-    return conversations[phoneNumber];
-}
-// Obtener conversación
-function getConversation(phoneNumber) {
-    const conversations = getConversations();
-    return conversations[phoneNumber] || null;
-}
-
-// Registrar respuesta del usuario
-function recordResponse(phoneNumber, message, type = 'user') {
-    const conversation = getConversation(phoneNumber);
-
-    if (!conversation) {
-        return null;
-    }
-
-    conversation.responses.push({
-        timestamp: Date.now(),
-        message,
-        type // 'user' o 'bot'
-    });
-
-    conversation.lastMessageAt = Date.now();
-    
-    if (type === 'user' && conversation.status === 'pending') {
-    conversation.status = 'responded';
   }
 
-    return createOrUpdateConversation(phoneNumber, conversation);
+  conversations[phoneNumber] = {
+    ...conversations[phoneNumber],
+    ...data
+  };
+
+  saveConversations(conversations);
+  return conversations[phoneNumber];
 }
 
-// Incrementar intentos de contacto
-function incrementAttempts(phoneNumber) {
-    const conversation = getConversation(phoneNumber);
-
-    if (!conversation) {
-        return null;
-    }
-
-    const attempts = conversation.attempts + 1;
-    const nextReminderAt = attempts < 3
-        // ? Date.now() + (6 * 60 * 60 * 1000) // 6 horas
-        ? Date.now() + (1 * 60 * 1000) // 1 minuto
-        : null; // No más recordatorios
-
-    return createOrUpdateConversation(phoneNumber, {
-        attempts,
-        nextReminderAt,
-        lastMessageAt: Date.now()
-    });
-}
-
-// Obtener conversaciones que necesitan recordatorio
-function getConversationsNeedingReminder() {
-    const conversations = getConversations();
-    const now = Date.now();
-
-    return Object.values(conversations).filter(conv =>
-        conv.status === 'pending' &&
-        conv.attempts < 3 &&
-        conv.nextReminderAt &&
-        conv.nextReminderAt <= now
-    );
-}
-
-// Obtener conversaciones que necesitan escalación (3 intentos sin respuesta)
-function getConversationsNeedingEscalation() {
-    const conversations = getConversations();
-
-    return Object.values(conversations).filter(conv =>
-        conv.status === 'pending' &&
-        conv.attempts >= 3 &&
-        conv.stage !== 'escalated'
-    );
-}
-
-// Marcar como escalada
-function markAsEscalated(phoneNumber) {
-    return createOrUpdateConversation(phoneNumber, {
-        status: 'escalated',
-        stage: 'escalated'
-    });
-}
-
-// Avanzar a siguiente etapa
-function advanceStage(phoneNumber, newStage) {
-    return createOrUpdateConversation(phoneNumber, {
-        stage: newStage
-    });
-}
-
-// conversationManager.js (añadir al module.exports)
-function setSnoozed(phoneNumber, untilMs) {
-  return createOrUpdateConversation(phoneNumber, {
-    status: 'snoozed',
-    nextReminderAt: untilMs,
-    attempts: 0
-  });
-}
-
-function clearSnoozed(phoneNumber) {
-  return createOrUpdateConversation(phoneNumber, {
-    status: 'pending',
-    nextReminderAt: null,
-    attempts: 0
-  });
-}
-
-function queueOutbound(phoneNumber, payload, sendAtMs) {
-  return createOrUpdateConversation(phoneNumber, {
-    pendingOutbound: payload,
-    pendingSendAt: sendAtMs
-  });
-}
-
-function dequeueOutbound(phoneNumber) {
-  return createOrUpdateConversation(phoneNumber, {
-    pendingOutbound: null,
-    pendingSendAt: null
-  });
-}
-
-function getConversationsWithPendingOutbound() {
+function getConversation(phoneNumber) {
   const conversations = getConversations();
-  const now = Date.now();
-  return Object.values(conversations).filter(c =>
-    c.pendingOutbound &&
-    c.pendingSendAt &&
-    c.pendingSendAt <= now
-  );
+  return conversations[phoneNumber] || null;
 }
 
-/**
- * Obtener conversaciones inactivas
- * - El usuario respondió (status !== 'pending')
- * - No está en estado completed, escalated, o awaiting_continuation
- * - Han pasado más de {timeout}ms desde el último mensaje del USUARIO
- * - Aún no se ha enviado el mensaje de continuación
- */
-function getInactiveConversations(inactivityTimeout) {
+function recordResponse(phoneNumber, message, who = 'bot') {
+  const conv = getConversation(phoneNumber) || createOrUpdateConversation(phoneNumber, {});
+  const now = Date.now();
+
+  const entry = {
+    who,
+    message,
+    at: now
+  };
+
+  const history = Array.isArray(conv.history) ? conv.history : [];
+  history.push(entry);
+
+  const update = {
+    history,
+    lastMessageAt: now
+  };
+
+  // ✅ IMPORTANT: trackear el último mensaje del usuario para inactividad real
+  if (who === 'user') {
+    update.lastUserMessageAt = now;
+  }
+
+  return createOrUpdateConversation(phoneNumber, update);
+}
+
+function getLastNonEmptyBotMessage(phoneNumber) {
+  const conv = getConversation(phoneNumber);
+  if (!conv || !Array.isArray(conv.history)) return null;
+
+  for (let i = conv.history.length - 1; i >= 0; i--) {
+    const h = conv.history[i];
+    if (h && h.who === 'bot') {
+      const m = (h.message || '').toString();
+      if (m.trim()) return m;
+    }
+  }
+  return null;
+}
+
+function getInactiveConversations(timeoutMs) {
   const conversations = getConversations();
   const now = Date.now();
 
   return Object.values(conversations).filter(conv => {
-    // Excluir conversaciones completadas o escaladas
-    if (conv.status === 'completed' || 
-        conv.status === 'escalated' || 
-        conv.status === 'awaiting_continuation' ||
-        conv.status === 'expired_no_continuation' ||
-        conv.status === 'user_declined_continuation') {
-      return false;
-    }
+    if (!conv) return false;
+    if (conv.status !== 'pending') return false;
+    if (conv.snoozedUntil && now < conv.snoozedUntil) return false;
 
-    // Solo conversaciones donde el usuario ha respondido al menos una vez
-    if (conv.status === 'pending') {
-      return false;
-    }
+    const last = conv.lastUserMessageAt || conv.lastMessageAt;
+    if (!last) return false;
 
-    // Si ya tiene programada una verificación de inactividad futura, esperarla
-    if (conv.inactivityCheckAt && conv.inactivityCheckAt > now) {
-      return false;
-    }
-
-    // Si ya se envió mensaje de continuación, no volver a enviar
-    if (conv.continuationAskedAt) {
-      return false;
-    }
-
-    // Verificar si hay respuestas del usuario
-    if (!conv.responses || conv.responses.length === 0) {
-      return false;
-    }
-
-    // Encontrar el último mensaje del USUARIO (no del bot)
-    const userMessages = conv.responses.filter(r => r.type === 'user');
-    if (userMessages.length === 0) {
-      return false;
-    }
-
-    const lastUserMessage = userMessages[userMessages.length - 1];
-    const timeSinceLastUserMessage = now - lastUserMessage.timestamp;
-
-    // Si han pasado más de {inactivityTimeout} desde el último mensaje del usuario
-    return timeSinceLastUserMessage >= inactivityTimeout;
+    return (now - last) >= timeoutMs;
   });
 }
 
-/**
- * Obtener conversaciones donde expiró el tiempo de espera de continuación
- * - Se envió mensaje "¿Desea continuar?" pero no respondió en 2h
- */
-function getExpiredContinuations() {
+function snoozeConversation(phoneNumber, ms) {
+  const until = Date.now() + ms;
+  return createOrUpdateConversation(phoneNumber, {
+    status: 'snoozed',
+    snoozedUntil: until
+  });
+}
+
+function clearSnoozed(phoneNumber) {
+  // Al salir del modo "snoozed", reactivamos el flujo y programamos un recordatorio
+  // cercano para no quedarnos sin siguiente envío.
+  return createOrUpdateConversation(phoneNumber, {
+    status: 'pending',
+    nextReminderAt: Date.now() + (1 * 60 * 1000), // reintenta en 1 minuto (ajusta si quieres)
+    attempts: 0
+  });
+}
+
+function getConversationsNeedingReminder() {
   const conversations = getConversations();
   const now = Date.now();
 
-  return Object.values(conversations).filter(conv =>
-    conv.status === 'awaiting_continuation' &&
-    conv.continuationTimeoutAt &&
-    conv.continuationTimeoutAt <= now
-  );
+  return Object.values(conversations).filter(conv => {
+    if (!conv) return false;
+    if (conv.status !== 'pending') return false;
+    if (!conv.nextReminderAt) return false;
+    if (conv.snoozedUntil && now < conv.snoozedUntil) return false;
+    return now >= conv.nextReminderAt;
+  });
 }
 
+// Devuelve conversaciones que deben escalar (>=3 intentos y aún pendientes)
+function getConversationsNeedingEscalation() {
+  const conversations = getConversations();
+  const now = Date.now();
+
+  return Object.values(conversations).filter(conv => {
+    if (!conv) return false;
+
+    // Solo escalamos conversaciones activas/pending
+    if (conv.status !== 'pending') return false;
+
+    // Respeta snooze
+    if (conv.snoozedUntil && now < conv.snoozedUntil) return false;
+
+    // Ya escalada -> fuera
+    if (conv.escalatedAt) return false;
+
+    const attempts = Number(conv.attempts || 0);
+    return attempts >= 3;
+  });
+}
+
+// Incrementa intentos y programa próximo recordatorio (6h)
+function incrementAttempts(phoneNumber, hours = 6) {
+  const conv = getConversation(phoneNumber) || createOrUpdateConversation(phoneNumber, {});
+  const attempts = Number(conv.attempts || 0) + 1;
+
+  return createOrUpdateConversation(phoneNumber, {
+    attempts,
+    // Reprograma siguiente recordatorio a 6h (coincide con tu scheduler)
+    nextReminderAt: Date.now() + hours * 60 * 60 * 1000
+  });
+}
+
+// Marca una conversación como escalada y limpia recordatorios
+function markAsEscalated(phoneNumber) {
+  return createOrUpdateConversation(phoneNumber, {
+    status: 'escalated',
+    stage: 'escalated',
+    escalatedAt: Date.now(),
+    nextReminderAt: null
+  });
+}
+
+
 module.exports = {
-    clearSnoozed,
-    setSnoozed,
-    queueOutbound,
-    dequeueOutbound,
-    getConversationsWithPendingOutbound,
-    getInactiveConversations,
-    getExpiredContinuations,
-    createOrUpdateConversation,
-    getConversation,
-    recordResponse,
-    incrementAttempts,
-    getConversationsNeedingReminder,
-    getConversationsNeedingEscalation,
-    markAsEscalated,
-    advanceStage
+  getConversations,
+  saveConversations,
+  createOrUpdateConversation,
+  getConversation,
+  recordResponse,
+  getLastNonEmptyBotMessage,
+  getInactiveConversations,
+  snoozeConversation,
+  clearSnoozed,
+  getConversationsNeedingReminder,
+  getConversationsNeedingEscalation,
+  incrementAttempts,
+  markAsEscalated
 };

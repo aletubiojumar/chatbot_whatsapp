@@ -1,129 +1,139 @@
 const twilio = require('twilio');
 
-// Función para obtener el cliente de Twilio
 function getClient() {
   const accountSid = process.env.TWILIO_ACCOUNT_SID;
   const authToken = process.env.TWILIO_AUTH_TOKEN;
 
   if (!accountSid || !authToken) {
-    throw new Error('Las credenciales de Twilio no están configuradas. Verifica tu archivo .env');
+    throw new Error('TWILIO_ACCOUNT_SID o TWILIO_AUTH_TOKEN no configurados en .env');
   }
 
   return twilio(accountSid, authToken);
 }
 
 /**
- * Envía mensaje con botones usando Content Template
- * @param {string} toNumber - Número destino (formato: whatsapp:+34XXXXXXXXX)
- * @param {string} fromNumber - número de WhatsApp (formato: whatsapp:+14155238886)
- * @param {string} contentSid - El SID del Content Template
+ * Envía un template de Twilio usando ContentSid
+ * @param {string} toNumber - Número destino (formato: whatsapp:+34...)
+ * @param {string} fromNumber - Número origen (formato: whatsapp:+14155238886)
+ * @param {string} contentSid - SID del template (HX...)
+ * @param {object|null} variables - Variables del template (opcional)
  */
-
 async function sendTemplateMessage(toNumber, fromNumber, contentSid, variables = null) {
-  try {
-    const client = getClient();
+  const client = getClient();
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
 
-    const payload = {
+  // ✅ Validación del ContentSid
+  if (!contentSid || typeof contentSid !== 'string' || !contentSid.startsWith('HX')) {
+    throw new Error(`ContentSid inválido: "${contentSid}". Debe empezar con "HX"`);
+  }
+
+  console.log('🧩 Enviando template...');
+  console.log('   ContentSid:', contentSid);
+  console.log('   To:', toNumber);
+  console.log('   From:', fromNumber);
+  if (variables) {
+    console.log('   Variables:', JSON.stringify(variables));
+  }
+
+  try {
+    // ✅ MÉTODO 1: Intentar con client.messages.create() primero (más simple)
+    const messageParams = {
       from: fromNumber,
       to: toNumber,
-      contentSid: contentSid,
+      contentSid: contentSid
     };
 
     if (variables && Object.keys(variables).length > 0) {
-      payload.contentVariables = JSON.stringify(variables);
+      messageParams.contentVariables = JSON.stringify(variables);
     }
 
-    const message = await client.messages.create(payload);
-
-    console.log('✅ Mensaje con botones enviado:', message.sid);
-    console.log('📱 Enviado a:', toNumber);
-    console.log('📅 Estado:', message.status);
+    const message = await client.messages.create(messageParams);
+    console.log('✅ Template enviado correctamente. SID:', message.sid);
     return message;
+
   } catch (error) {
-    console.error('❌ Error enviando mensaje:', error.message);
-    if (error.code) console.error('Código de error:', error.code);
+    console.error('❌ Error enviando template (SDK):', error.message);
+    if (error.code) console.error('   Código de error Twilio:', error.code);
+
+    // ✅ Si falla con 21619 o ERR_INVALID_URL, usar método RAW con URL completa
+    if (error.code === 21619 || error.code === 'ERR_INVALID_URL') {
+      console.log('🔄 Reintentando con método RAW (URL completa)...');
+
+      try {
+        // Construir URL completa manualmente
+        const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`;
+        
+        const data = {
+          From: fromNumber,
+          To: toNumber,
+          ContentSid: contentSid
+        };
+
+        if (variables && Object.keys(variables).length > 0) {
+          data.ContentVariables = JSON.stringify(variables);
+        }
+
+        console.log('🌐 URL completa:', url);
+
+        // Usar client.request con URL completa
+        const response = await client.request({
+          method: 'POST',
+          url: url,  // ✅ 'url' con URL completa (no 'uri')
+          data: data
+        });
+
+        const messageSid = response?.body?.sid || response?.sid || 'unknown';
+        console.log('✅ Template enviado (RAW). SID:', messageSid);
+        return response?.body || response;
+
+      } catch (rawError) {
+        console.error('❌ Error en método RAW:', rawError.message);
+        throw rawError;
+      }
+    }
+
     throw error;
   }
 }
 
 /**
- * Envía mensaje simple con opciones numeradas (Sandbox - funciona sin aprobación)
+ * Envía un mensaje de texto simple (sin template)
  */
-async function sendSimpleMessage(toNumber, fromNumber) {
+async function sendSimpleMessage(toNumber, fromNumber, body) {
+  const client = getClient();
+  
+  if (!body || typeof body !== 'string' || body.trim() === '') {
+    throw new Error('El cuerpo del mensaje (body) no puede estar vacío');
+  }
+
+  console.log('📤 Enviando mensaje simple...');
+  console.log('   To:', toNumber);
+  console.log('   Body:', body.substring(0, 50) + (body.length > 50 ? '...' : ''));
+
   try {
-    const client = getClient();
-
-    const messageBody = `Buenos días, Le contactamos desde el gabinete pericial del seguro del hogar por un siniestro comunicado.
-
-Por favor, responda con el número de la opción:
-
-1️⃣ Sí, soy el asegurado/a
-2️⃣ No soy el asegurado/a  
-3️⃣ Ahora no puedo atender`;
-
     const message = await client.messages.create({
       from: fromNumber,
-      body: messageBody,
-      to: toNumber
+      to: toNumber,
+      body
     });
 
-    console.log('✅ Mensaje simple enviado:', message.sid);
-    console.log('📱 Enviado a:', toNumber);
+    console.log('✅ Mensaje simple enviado. SID:', message.sid);
     return message;
   } catch (error) {
-    console.error('❌ Error enviando mensaje:', error.message);
+    console.error('❌ Error enviando mensaje simple:', error.message);
     throw error;
   }
 }
 
 /**
- * Lista todos los Content Templates disponibles
+ * Alias para sendSimpleMessage
  */
-async function listContentTemplates() {
-  try {
-    const client = getClient();
-
-    const contents = await client.content.v1.contents.list({ limit: 20 });
-
-    console.log('\n📋 Content Templates disponibles:\n');
-    contents.forEach((content) => {
-      console.log(`- Nombre: ${content.friendlyName}`);
-      console.log(`  SID: ${content.sid}`);
-      console.log(`  Tipo: ${content.types ? Object.keys(content.types).join(', ') : 'N/A'}`);
-      console.log('---');
-    });
-
-    return contents;
-  } catch (error) {
-    console.error('❌ Error listando templates:', error.message);
-    throw error;
-  }
-}
-
-/**
- * Envía mensaje con texto personalizado
- */
-async function sendSimpleMessageWithText(toNumber, fromNumber, messageText) {
-  try {
-    const client = getClient();
-
-    const message = await client.messages.create({
-      from: fromNumber,
-      body: messageText,
-      to: toNumber
-    });
-
-    console.log('✅ Mensaje enviado:', message.sid);
-    return message;
-  } catch (error) {
-    console.error('❌ Error enviando mensaje:', error.message);
-    throw error;
-  }
+async function sendSimpleMessageWithText(toNumber, fromNumber, text) {
+  return sendSimpleMessage(toNumber, fromNumber, text);
 }
 
 module.exports = {
   sendTemplateMessage,
   sendSimpleMessage,
-  listContentTemplates,
   sendSimpleMessageWithText
 };

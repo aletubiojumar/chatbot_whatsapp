@@ -2,17 +2,17 @@ const express = require('express');
 const bodyParser = require('body-parser');
 require('dotenv').config();
 
-const { processMessage, generateTwiMLResponse } = require('./messageHandler');
+const { processMessage } = require('./messageHandler');
 const { startReminderScheduler } = require('./reminderScheduler');
 const { startInactivityScheduler } = require('./inactivityHandler');
 const conversationManager = require('./conversationManager');
 const responses = require('./responses');
 
 const {
-  sendVerificationTemplate,
   sendAttendeeTemplate,
   sendCorrectionTemplate,
-  sendAppointmentTemplate
+  sendAppointmentTemplate,
+  sendSeverityTemplate
 } = require('./templateSender');
 
 const { isWithinSendWindow } = require('./timeWindow');
@@ -23,6 +23,25 @@ const PORT = process.env.PORT || 3000;
 // Middleware
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
+
+/* =======================
+   TWIML (LOCAL EN INDEX)
+======================= */
+function escapeXml(unsafe) {
+  return (unsafe || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function generateTwiMLResponse(responseText) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Message>${escapeXml(responseText || ' ')}</Message>
+</Response>`;
+}
 
 // Ruta de salud
 app.get('/', (req, res) => {
@@ -46,7 +65,6 @@ app.post('/webhook', async (req, res) => {
       const closedText =
         responses.closedMessage ||
         'Hola, ahora mismo estamos cerrados, te atenderemos entre las 8:00 am y las 21:00. Un saludo.';
-
       const twimlClosed = generateTwiMLResponse(closedText);
       res.type('text/xml');
       return res.send(twimlClosed);
@@ -67,44 +85,29 @@ app.post('/webhook', async (req, res) => {
     // ENVÍO DE TEMPLATES (BOTONES)
     // =========================
 
-    // 1) Template verificación (mensaje2)
-    if (conversation && conversation.status === 'awaiting_verification' && conversation.stage === 'identity_confirmed') {
-      console.log(`🚀 Condición cumplida. Enviando template de verificación...`);
-
-      // Evitar dobles envíos por reintentos + marcar prompt de botones
-      conversationManager.createOrUpdateConversation(senderNumber, {
-        status: 'responded',
-        lastPromptType: 'buttons'
-      });
-
-      setTimeout(async () => {
-        try {
-          await sendVerificationTemplate(senderNumber);
-          conversationManager.recordResponse(senderNumber, '[Template: verificación]', 'bot');
-        } catch (error) {
-          console.error('❌ Error enviando template verificación:', error);
-          conversationManager.createOrUpdateConversation(senderNumber, { status: 'awaiting_verification' });
-        }
-      }, 300);
-
-      const twiml = generateTwiMLResponse(' ');
-      res.type('text/xml');
-      return res.send(twiml);
-    }
-
-    // 2) Template quién atenderá (mensaje4)
+    // 1) Template quién atenderá (mensaje4)
     if (conversation && conversation.status === 'awaiting_attendee' && conversation.stage === 'attendee_select') {
       console.log(`🚀 Condición cumplida. Enviando template de quién atenderá al perito (mensaje4)...`);
 
+      const MENSAJE4_SID = process.env.MENSAJE4_SID;
+
       conversationManager.createOrUpdateConversation(senderNumber, {
         status: 'responded',
-        lastPromptType: 'buttons'
+        lastPromptType: 'buttons',
+        lastInteractive: {
+          kind: 'template',
+          sid: MENSAJE4_SID,
+          variables: null
+        },
+        lastMessageAt: Date.now(),
+        inactivityCheckAt: null
       });
 
       setTimeout(async () => {
         try {
           await sendAttendeeTemplate(senderNumber);
           conversationManager.recordResponse(senderNumber, '[Template: quién atenderá]', 'bot');
+          console.log(`✅ Template mensaje4 enviado a ${senderNumber}`);
         } catch (error) {
           console.error('❌ Error enviando template mensaje4:', error);
           conversationManager.createOrUpdateConversation(senderNumber, { status: 'awaiting_attendee' });
@@ -116,7 +119,7 @@ app.post('/webhook', async (req, res) => {
       return res.send(twiml);
     }
 
-    // 3) Template confirmación correcciones (mensaje_corregir)
+    // 2) Template confirmación correcciones (mensaje_corregir)
     if (
       conversation &&
       conversation.status === 'awaiting_correction_confirmation' &&
@@ -124,16 +127,25 @@ app.post('/webhook', async (req, res) => {
     ) {
       console.log(`🚀 Enviando template mensaje_corregir (confirmación datos corregidos)...`);
 
-      conversationManager.createOrUpdateConversation(senderNumber, {
-        status: 'responded',
-        lastPromptType: 'buttons'
-      });
+      const MENSAJE_CORREGIR_SID = process.env.MENSAJE_CORREGIR_SID;
 
       const vars = {
         direccion: conversation.correctedDireccion || '',
         fecha: conversation.correctedFecha || '',
         nombre: conversation.correctedNombre || ''
       };
+
+      conversationManager.createOrUpdateConversation(senderNumber, {
+        status: 'responded',
+        lastPromptType: 'buttons',
+        lastInteractive: {
+          kind: 'template',
+          sid: MENSAJE_CORREGIR_SID,
+          variables: vars
+        },
+        lastMessageAt: Date.now(),
+        inactivityCheckAt: null
+      });
 
       setTimeout(async () => {
         try {
@@ -151,13 +163,54 @@ app.post('/webhook', async (req, res) => {
       return res.send(twiml);
     }
 
+    // 3) Template gravedad (mensaje_gravedad)
+    if (conversation && conversation.status === 'awaiting_severity_template' && conversation.stage === 'awaiting_severity') {
+      console.log('🚀 Enviando template mensaje_gravedad...');
+
+      const MENSAJE_GRAVEDAD_SID = process.env.MENSAJE_GRAVEDAD_SID;
+
+      conversationManager.createOrUpdateConversation(senderNumber, {
+        status: 'responded',
+        lastPromptType: 'buttons',
+        lastInteractive: {
+          kind: 'template',
+          sid: MENSAJE_GRAVEDAD_SID,
+          variables: null
+        },
+        lastMessageAt: Date.now(),
+        inactivityCheckAt: null
+      });
+
+      try {
+        const msg = await sendSeverityTemplate(senderNumber);
+        console.log('✅ Enviado. SID:', msg.sid || msg?.sid || msg?.MessageSid);
+        conversationManager.recordResponse(senderNumber, '[Template: gravedad]', 'bot');
+      } catch (err) {
+        console.error('❌ Error enviando template mensaje_gravedad:', err);
+        conversationManager.createOrUpdateConversation(senderNumber, { status: 'awaiting_severity_template' });
+      }
+
+      const twiml = generateTwiMLResponse(' ');
+      res.type('text/xml');
+      return res.send(twiml);
+    }
+
     // 4) Template cita (mensaje_cita)
     if (conversation && conversation.status === 'awaiting_appointment' && conversation.stage === 'appointment_select') {
       console.log(`🚀 Condición cumplida. Enviando template mensaje_cita...`);
 
+      const MENSAJE_CITA_SID = process.env.MENSAJE_CITA_SID;
+
       conversationManager.createOrUpdateConversation(senderNumber, {
         status: 'responded',
-        lastPromptType: 'buttons'
+        lastPromptType: 'buttons',
+        lastInteractive: {
+          kind: 'template',
+          sid: MENSAJE_CITA_SID,
+          variables: null
+        },
+        lastMessageAt: Date.now(),
+        inactivityCheckAt: null
       });
 
       setTimeout(async () => {

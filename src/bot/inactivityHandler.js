@@ -7,49 +7,151 @@ const FROM_NUMBER = process.env.TWILIO_FROM_NUMBER;
 const MENSAJE_AUSENCIA_SID = process.env.MENSAJE_AUSENCIA_SID;
 
 // Tiempo de inactividad antes del primer aviso
-const INACTIVITY_TIMEOUT = 1 * 60 * 1000; // ⚡ 1 MINUTO PARA PRUEBAS
+const INACTIVITY_TIMEOUT = 1 * 60 * 1000; // 1 minuto (pruebas)
 
 // Tiempo de espera después del mensaje de continuación
-const CONTINUATION_TIMEOUT = 5 * 60 * 1000; // ⚡ 5 MINUTO PARA PRUEBAS
+const CONTINUATION_TIMEOUT = 5 * 60 * 1000; // 5 minutos (pruebas)
 
-/**
- * Obtiene el último mensaje enviado por el bot a un usuario
- */
-function getLastBotMessage(phoneNumber) {
-  const conversation = conversationManager.getConversation(phoneNumber);
-  if (!conversation || !conversation.responses) return null;
+function normalizeText(s) {
+  return (s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+}
 
-  // Buscar el último mensaje del bot (tipo 'bot')
-  const botMessages = conversation.responses.filter(r => r.type === 'bot');
-  if (botMessages.length === 0) return null;
+function isInactivityEligible(conv) {
+  if (!conv) return false;
+  if (!conv.lastMessageAt) return false;
 
-  return botMessages[botMessages.length - 1].message;
+  // No aplicar si ya está completada/escalada o esperando confirmación de continuación
+  if (conv.status === 'completed' || conv.status === 'escalated') return false;
+  if (conv.status === 'awaiting_continuation') return false;
+
+  // Si estamos esperando admin offer, no metemos inactividad
+  if (conv.status === 'awaiting_admin_offer') return false;
+
+  return true;
 }
 
 /**
- * Procesa conversaciones inactivas (usuario respondió pero luego dejó de responder)
- * - Detecta conversaciones que llevan 2h sin respuesta del usuario
- * - Envía mensaje: "¿Desea continuar la conversación?"
+ * Obtiene conversaciones que necesitan mensaje de inactividad
  */
-async function processInactiveConversations() {
-  console.log('\n🔍 Verificando conversaciones inactivas...');
+function getConversationsNeedingInactivityPrompt() {
+  const all = conversationManager.getConversations();
+  const now = Date.now();
 
-  const conversations = conversationManager.getInactiveConversations(INACTIVITY_TIMEOUT);
+  return Object.values(all).filter(conv => {
+    if (!isInactivityEligible(conv)) return false;
 
-  if (conversations.length === 0) {
-    console.log('✅ No hay conversaciones inactivas');
+    // ✅ Usar lastMessageAt directamente (se actualiza con CUALQUIER mensaje, bot o usuario)
+    if (!conv.lastMessageAt) return false;
+
+    const elapsed = now - conv.lastMessageAt;
+    return elapsed >= INACTIVITY_TIMEOUT;
+  });
+}
+
+/**
+ * Guarda el "estado" al que debemos volver cuando el usuario pulse "Sí".
+ */
+function rememberReturnState(phoneNumber) {
+  const conv = conversationManager.getConversation(phoneNumber);
+  if (!conv) return;
+
+  conversationManager.createOrUpdateConversation(phoneNumber, {
+    continuationReturn: {
+      stage: conv.stage,
+      status: conv.status,
+      lastPromptType: conv.lastPromptType || 'text',
+      lastInteractive: conv.lastInteractive || null
+    }
+  });
+}
+
+/**
+ * Reenvía el último mensaje interactivo guardado
+ */
+async function resendLastInteractive(phoneNumber) {
+  const conv = conversationManager.getConversation(phoneNumber);
+
+  // Buscar en continuationReturn primero, luego en la conversación actual
+  const li = conv?.continuationReturn?.lastInteractive || conv?.lastInteractive;
+
+  console.log('🔍 Debug resendLastInteractive:');
+  console.log('   continuationReturn:', conv?.continuationReturn);
+  console.log('   lastInteractive directo:', conv?.lastInteractive);
+  console.log('   li final:', li);
+
+  if (!li) {
+    console.log('⚠️  No hay lastInteractive guardado. Obteniendo último mensaje del bot...');
+
+    // Intentar obtener el último mensaje no vacío del bot del historial
+    const lastMsg = conversationManager.getLastNonEmptyBotMessage(phoneNumber);
+    if (lastMsg && lastMsg.trim()) {
+      console.log(`✅ Reenviando último mensaje del historial: ${lastMsg.substring(0, 50)}...`);
+      await sendSimpleMessageWithText(phoneNumber, FROM_NUMBER, lastMsg);
+      return;
+    }
+
+    console.log('⚠️  No hay mensajes en el historial. Enviando texto genérico.');
+    await sendSimpleMessageWithText(phoneNumber, FROM_NUMBER, 'Perfecto, continuemos.');
     return;
   }
 
-  // Si estamos fuera de horario, reprogramar para el próximo horario válido
+  if (li.kind === 'template') {
+    console.log(`✅ Reenviando template: ${li.sid}`);
+
+    // OJO: NO pasar ContentVariables si no existen / están vacías
+    const vars =
+      li.variables &&
+        typeof li.variables === 'object' &&
+        !Array.isArray(li.variables) &&
+        Object.keys(li.variables).length > 0
+        ? li.variables
+        : null;
+
+    await sendTemplateMessage(phoneNumber, FROM_NUMBER, li.sid, vars);
+
+    // ✅ Cambiar status para evitar reenvío en bucle
+    conversationManager.createOrUpdateConversation(phoneNumber, {
+      status: 'responded',
+      lastMessageAt: Date.now(),
+      inactivityCheckAt: null
+    });
+
+    return;
+  }
+
+  if (li.kind === 'text') {
+    console.log(`✅ Reenviando texto: ${li.body}`);
+    await sendSimpleMessageWithText(phoneNumber, FROM_NUMBER, li.body);
+    return;
+  }
+
+  console.log('⚠️  Tipo de lastInteractive desconocido. Enviando texto genérico.');
+  await sendSimpleMessageWithText(phoneNumber, FROM_NUMBER, 'Perfecto, continuemos.');
+}
+
+/**
+ * Procesa conversaciones inactivas y envía mensaje de ausencia
+ */
+async function processInactiveConversations() {
+  console.log('🔍 Verificando conversaciones inactivas...');
+
   if (!isWithinSendWindow()) {
-    const sendAt = nextSendTimeMs(new Date());
-    for (const conv of conversations) {
-      conversationManager.createOrUpdateConversation(conv.phoneNumber, {
-        inactivityCheckAt: sendAt
-      });
-    }
-    console.log(`🕘 Fuera de horario. Verificación de inactividad reprogramada para ${new Date(sendAt).toLocaleString()}`);
+    const ms = nextSendTimeMs();
+    console.log(`⏰ Fuera de horario. Inactividad reprogramada en ${Math.round(ms / 60000)} min.`);
+    return;
+  }
+
+  const conversations = getConversationsNeedingInactivityPrompt();
+
+  console.log(`📊 Total de conversaciones: ${Object.keys(conversationManager.getConversations()).length}`);
+  console.log(`📤 Conversaciones inactivas detectadas: ${conversations.length}`);
+
+  if (conversations.length === 0) {
+    console.log('✅ No hay conversaciones inactivas');
     return;
   }
 
@@ -57,14 +159,19 @@ async function processInactiveConversations() {
 
   for (const conv of conversations) {
     try {
-      // Usar template con botones "¿Desea continuar la conversación?"
+      console.log(`   📱 Enviando mensaje de continuación a: ${conv.phoneNumber}`);
+
+      // Guardamos estado para poder "volver atrás" al pulsar Sí
+      rememberReturnState(conv.phoneNumber);
+
+      // Enviar template "¿Desea continuar la conversación?"
       await sendTemplateMessage(conv.phoneNumber, FROM_NUMBER, MENSAJE_AUSENCIA_SID);
-      
+
       conversationManager.createOrUpdateConversation(conv.phoneNumber, {
         status: 'awaiting_continuation',
-        inactivityCheckAt: null,
         continuationAskedAt: Date.now(),
-        continuationTimeoutAt: Date.now() + CONTINUATION_TIMEOUT
+        continuationTimeoutAt: Date.now() + CONTINUATION_TIMEOUT,
+        inactivityCheckAt: null
       });
 
       console.log(`✅ Mensaje de continuación enviado a ${conv.phoneNumber}`);
@@ -75,156 +182,119 @@ async function processInactiveConversations() {
 }
 
 /**
- * Procesa conversaciones que necesitan finalización
- * - Usuario no respondió al mensaje de continuación después de 2h
- * - O respondió "no"
+ * Procesa continuaciones expiradas
  */
 async function processExpiredContinuations() {
-  console.log('\n⏰ Verificando conversaciones con tiempo de continuación expirado...');
+  const all = conversationManager.getConversations();
+  const now = Date.now();
 
-  const conversations = conversationManager.getExpiredContinuations();
+  const expired = Object.values(all).filter(
+    c => c.status === 'awaiting_continuation' && c.continuationTimeoutAt && c.continuationTimeoutAt <= now
+  );
 
-  if (conversations.length === 0) {
+  if (expired.length === 0) {
     console.log('✅ No hay continuaciones expiradas');
     return;
   }
 
-  // Si estamos fuera de horario, reprogramar
-  if (!isWithinSendWindow()) {
-    const sendAt = nextSendTimeMs(new Date());
-    for (const conv of conversations) {
-      conversationManager.createOrUpdateConversation(conv.phoneNumber, {
-        continuationTimeoutAt: sendAt
-      });
-    }
-    console.log(`🕘 Fuera de horario. Finalizaciones reprogramadas para ${new Date(sendAt).toLocaleString()}`);
-    return;
-  }
+  console.log(`⏰ ${expired.length} continuaciones expiradas. Marcando como finalizadas...`);
 
-  console.log(`📞 Finalizando ${conversations.length} conversación(es)...`);
-
-  for (const conv of conversations) {
-    try {
-      const mensaje = 'Administración se pondrá en contacto con usted. Un saludo.';
-      
-      await sendSimpleMessageWithText(conv.phoneNumber, FROM_NUMBER, mensaje);
-      
-      conversationManager.createOrUpdateConversation(conv.phoneNumber, {
-        status: 'expired_no_continuation',
-        stage: 'completed',
-        continuationTimeoutAt: null
-      });
-
-      console.log(`✅ Conversación finalizada por inactividad: ${conv.phoneNumber}`);
-    } catch (error) {
-      console.error(`❌ Error finalizando conversación ${conv.phoneNumber}:`, error.message);
-    }
+  for (const conv of expired) {
+    conversationManager.createOrUpdateConversation(conv.phoneNumber, {
+      status: 'expired_no_continuation',
+      stage: 'completed',
+      continuationAskedAt: null,
+      continuationTimeoutAt: null,
+      continuationReturn: null
+    });
   }
 }
 
 /**
- * Maneja la respuesta del usuario al mensaje de continuación
- * @param {string} mensaje - Mensaje del usuario
- * @param {string} senderNumber - Número del usuario
- * @returns {string|null} - Respuesta a enviar o null si no aplica
+ * Si estamos esperando "continuar", intercepta el mensaje del usuario.
+ * ✅ Si dice "Sí" -> reenviar el último mensaje interactivo (lista/botones/texto)
+ * ✅ Si dice "No" -> escalar a administración
+ * ✅ Si no es claro -> pedir Sí/No
  */
 function handleContinuationResponse(mensaje, senderNumber) {
-  const conversation = conversationManager.getConversation(senderNumber);
-  
-  if (!conversation || conversation.status !== 'awaiting_continuation') {
-    return null; // No estamos esperando respuesta de continuación
-  }
+  const conv = conversationManager.getConversation(senderNumber);
+  if (!conv || conv.status !== 'awaiting_continuation') return null;
 
-  const mensajeLower = mensaje.toLowerCase().trim();
+  const t = normalizeText(mensaje);
 
-  // Usuario quiere continuar
-  if (
-    mensajeLower.includes('sí') ||
-    mensajeLower.includes('si') ||
-    mensajeLower === 's' ||
-    mensajeLower === 'vale' ||
-    mensajeLower === 'ok' ||
-    mensajeLower === 'continuar' ||
-    mensajeLower.includes('quiero continuar')
-  ) {
-    // Obtener el último mensaje del bot antes de la inactividad
-    const lastBotMessage = getLastBotMessage(senderNumber);
-    
-    // Restaurar el estado anterior (antes de awaiting_continuation)
+  const isYes =
+    t === 'si' ||
+    t === 'sí' ||
+    t === 's' ||
+    t === 'vale' ||
+    t === 'ok' ||
+    t.includes('continuar') ||
+    t.includes('quiero continuar');
+
+  const isNo = t === 'no' || t.includes('no quiero') || t.includes('no continuar');
+
+  if (isYes) {
+    // Restaurar estado previo PRESERVANDO lastInteractive
+    const ret = conv.continuationReturn || {};
+
+    console.log('🔍 Restaurando estado previo:');
+    console.log('   ret:', ret);
+    console.log('   ret.lastInteractive:', ret.lastInteractive);
+
     conversationManager.createOrUpdateConversation(senderNumber, {
+      stage: ret.stage || conv.stage,
       status: 'responded',
-      continuationAskedAt: null,
-      continuationTimeoutAt: null,
-      inactivityCheckAt: null,
-      lastMessageAt: Date.now()
-    });
-
-    console.log(`✅ Usuario ${senderNumber} quiere continuar la conversación`);
-    
-    // En lugar de reenviar el último mensaje (que puede ser un template),
-    // enviamos un mensaje de texto apropiado según la etapa
-    return getHelpMessageForStage(conversation.stage);
-  }
-
-  // Usuario NO quiere continuar
-  if (
-    mensajeLower.includes('no') ||
-    mensajeLower === 'n' ||
-    mensajeLower.includes('no quiero') ||
-    mensajeLower.includes('no deseo') ||
-    mensajeLower.includes('cancelar')
-  ) {
-    conversationManager.createOrUpdateConversation(senderNumber, {
-      status: 'user_declined_continuation',
-      stage: 'completed',
+      lastPromptType: ret.lastPromptType || conv.lastPromptType,
+      lastInteractive: ret.lastInteractive || conv.lastInteractive,  // ✅ PRESERVAR
       continuationAskedAt: null,
       continuationTimeoutAt: null,
       inactivityCheckAt: null
     });
 
-    console.log(`✅ Usuario ${senderNumber} no quiere continuar la conversación`);
-    
+    console.log(`✅ Usuario ${senderNumber} quiere continuar. Reenviando último mensaje...`);
+
+    // 🔥 CLAVE: reenviar el último mensaje anterior (template/lista)
+    // Lo hacemos ASYNC sin devolver texto extra.
+    setTimeout(() => {
+      resendLastInteractive(senderNumber).catch(err =>
+        console.error('❌ Error reenviando último mensaje interactivo:', err.message)
+      );
+    }, 250);
+
+    // Devolvemos vacío para que no aparezca "Por favor indique..."
+    return ' ';
+  }
+
+  if (isNo) {
+    // ✅ Cerrar conversación para que NO vuelva a entrar en inactividad
+    conversationManager.markAsEscalated(senderNumber);
+
+    // Limpieza extra (opcional pero recomendable)
+    conversationManager.createOrUpdateConversation(senderNumber, {
+      continuationAskedAt: null,
+      continuationTimeoutAt: null,
+      inactivityCheckAt: null,
+      continuationReturn: null
+    });
+
+    console.log(`✅ Usuario ${senderNumber} no quiere continuar (escalado y cerrado)`);
     return 'Administración se pondrá en contacto con usted. Un saludo.';
   }
 
-  // Si la respuesta no es clara, pedir clarificación
   return 'Por favor, responda "Sí" o "No" para continuar la conversación.';
 }
 
 /**
- * Obtiene un mensaje de ayuda según la etapa de la conversación
- */
-function getHelpMessageForStage(stage) {
-  const responses = require('./responses');
-  
-  const helpMessages = {
-    'initial': responses.initialStageHelp,
-    'identity_confirmed': 'Por favor, responda a la pregunta de verificación de datos.',
-    'awaiting_corrections': responses.pedirDatosCorregidos,
-    'confirming_corrections': 'Por favor, responda: "Sí, son correctos" o "No, hay algún error".',
-    'attendee_select': 'Por favor, indique quién atenderá al perito.',
-    'awaiting_claim_type': 'Por favor, indique la tipología del siniestro (número del 1 al 18).',
-    'appointment_select': 'Por favor, seleccione el tipo de cita: "Presencial" o "Telemática".',
-    'awaiting_severity': 'Por favor, indique el tramo de gravedad (número del 1 al 5).',
-    'awaiting_date': 'Por favor, indique la fecha que mejor le convenga.'
-  };
-
-  return helpMessages[stage] || 'Por favor, continúe respondiendo según las opciones indicadas.';
-}
-
-/**
- * Inicia el scheduler de verificación de inactividad
- * Se ejecuta cada 30 minutos
+ * Inicia el scheduler de inactividad
  */
 function startInactivityScheduler() {
   console.log('🚀 Iniciando scheduler de inactividad...');
-  console.log('⏰ Se ejecutará cada 30 minutos');
+  console.log('⏰ Se ejecutará cada 1 minuto');
 
   console.log('\n🔄 Ejecutando verificación inicial de inactividad...');
   processInactiveConversations().catch(console.error);
   processExpiredContinuations().catch(console.error);
 
-  // Ejecutar cada 30 minutos
   setInterval(async () => {
     console.log(`\n⏰ [${new Date().toLocaleString()}] Ejecutando verificación de inactividad...`);
     try {
@@ -233,7 +303,7 @@ function startInactivityScheduler() {
     } catch (error) {
       console.error('❌ Error en scheduler de inactividad:', error);
     }
-  }, 1 * 60 * 1000); // 30 minutos
+  }, 1 * 60 * 1000); // 1 minuto
 }
 
 module.exports = {

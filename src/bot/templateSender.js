@@ -1,48 +1,50 @@
 const { sendTemplateMessage } = require('./sendMessage');
-require('dotenv').config();
 
-const FROM_NUMBER = process.env.TWILIO_FROM_NUMBER
-const MENSAJE2_SID = process.env.MENSAJE2_SID
-const MENSAJE4_SID = process.env.MENSAJE4_SID
-const MENSAJE_CITA_SID = process.env.MENSAJE_CITA_SID
-const MENSAJE_CORREGIR_SID = process.env.MENSAJE_CORREGIR_SID
-const MENSAJE_AUSENCIA_SID = process.env.MENSAJE_AUSENCIA_SID
+const FROM_NUMBER = process.env.TWILIO_FROM_NUMBER;
 
-async function sendVerificationTemplate(toNumber) {
-  await sendTemplateMessage(toNumber, FROM_NUMBER, MENSAJE2_SID);
-  console.log(`✅ Template mensaje2 enviado a ${toNumber}`);
-  return true;
+function assertEnv(name) {
+  const v = process.env[name];
+  if (!v) throw new Error(`Falta la variable de entorno ${name} en .env`);
+  return v;
 }
 
-async function sendAttendeeTemplate(toNumber) {
-  await sendTemplateMessage(toNumber, FROM_NUMBER, MENSAJE4_SID);
-  console.log(`✅ Template mensaje4 enviado a ${toNumber}`);
-  return true;
+async function sendInitialTemplate(toNumber, variables = null) {
+  const sid = assertEnv('CONTENT_SID');
+  return sendTemplateMessage(toNumber, FROM_NUMBER, sid, variables);
 }
 
-// ✅ aquí pasamos variables
+async function sendAttendeeTemplate(toNumber, variables = null) {
+  const sid = assertEnv('MENSAJE4_SID');
+  return sendTemplateMessage(toNumber, FROM_NUMBER, sid, variables);
+}
+
 async function sendCorrectionTemplate(toNumber, variables) {
-  await sendTemplateMessage(toNumber, FROM_NUMBER, MENSAJE_CORREGIR_SID, variables);
-  console.log(`✅ Template mensaje_corregir enviado a ${toNumber}`);
-  return true;
+  const sid = assertEnv('MENSAJE_CORREGIR_SID');
+  return sendTemplateMessage(toNumber, FROM_NUMBER, sid, variables);
 }
 
-async function sendAppointmentTemplate(toNumber) {
-  await sendTemplateMessage(toNumber, FROM_NUMBER, MENSAJE_CITA_SID);
-  console.log(`✅ Template mensaje_cita enviado a ${toNumber}`);
-  return true;
+async function sendAppointmentTemplate(toNumber, variables = null) {
+  const sid = assertEnv('MENSAJE_CITA_SID');
+  return sendTemplateMessage(toNumber, FROM_NUMBER, sid, variables);
 }
 
-async function sendContinuationTemplate(toNumber) {
-  await sendTemplateMessage(toNumber, FROM_NUMBER, MENSAJE_AUSENCIA_SID);
-  console.log(`✅ Template mensaje_ausencia enviado a ${toNumber}`);
-  return true;
+async function sendContinuationTemplate(toNumber, variables = null) {
+  const sid = assertEnv('MENSAJE_AUSENCIA_SID');
+  return sendTemplateMessage(toNumber, FROM_NUMBER, sid, variables);
+}
+
+// ✅ Gravedad
+async function sendSeverityTemplate(toNumber) {
+  const sid = assertEnv('MENSAJE_GRAVEDAD_SID');
+  console.log('🧩 MENSAJE_GRAVEDAD_SID =', sid);
+  return sendTemplateMessage(toNumber, FROM_NUMBER, sid);
 }
 
 module.exports = {
-  sendVerificationTemplate,
+  sendInitialTemplate,
   sendAttendeeTemplate,
   sendCorrectionTemplate,
   sendAppointmentTemplate,
-  sendContinuationTemplate
+  sendContinuationTemplate,
+  sendSeverityTemplate
 };

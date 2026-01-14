@@ -1,33 +1,61 @@
-const { sendTemplateMessage, sendSimpleMessage } = require('./bot/sendMessage');
+const { sendTemplateMessage } = require('./bot/sendMessage');
 const conversationManager = require('./bot/conversationManager');
 require('dotenv').config();
 
-const FROM_NUMBER = process.env.TWILIO_FROM_NUMBER || 'whatsapp:+14155238886';
+// 📌 CONFIGURACIÓN
+const FROM_NUMBER = process.env.TWILIO_FROM_NUMBER;
 const TO_NUMBER = process.argv[2];
+const CONTENT_SID = process.env.CONTENT_SID; // mensaje1_v2 de Twilio
 
-const CONTENT_SID = 'HX4a215fbd890a4cd18b04469a66da9c14';
-
+// ✅ VALIDACIONES
 if (!TO_NUMBER) {
   console.error('❌ Error: Debes proporcionar un número de teléfono');
   console.log('Uso: node src/sendInitialMessage.js whatsapp:+34XXXXXXXXX');
   process.exit(1);
 }
 
+if (!CONTENT_SID) {
+  console.error('❌ Error: CONTENT_SID no está configurado en .env');
+  console.error('Agrega esta línea a tu .env:');
+  console.error('CONTENT_SID=HXb324a1ef0402c9cc7c0368bdb3e007f3');
+  process.exit(1);
+}
+
+if (!FROM_NUMBER) {
+  console.error('❌ Error: TWILIO_FROM_NUMBER no está configurado en .env');
+  process.exit(1);
+}
+
+// 📤 FUNCIÓN PRINCIPAL
 async function send() {
   console.log('📤 Enviando mensaje inicial con botones...');
-  
+  console.log('   To:', TO_NUMBER);
+  console.log('   From:', FROM_NUMBER);
+  console.log('   ContentSid:', CONTENT_SID);
+  console.log('');
+
+  // Enviar template (sin variables porque mensaje1_v2 no las necesita)
+  await sendTemplateMessage(TO_NUMBER, FROM_NUMBER, CONTENT_SID, null);
+
+  // ✅ Crear/actualizar conversación en el sistema CON lastInteractive
   conversationManager.createOrUpdateConversation(TO_NUMBER, {
     status: 'pending',
     stage: 'initial',
-    attempts: 0
+    attempts: 0,
+    lastPromptType: 'buttons',
+    lastMessageAt: Date.now(),
+    lastInteractive: {
+      kind: 'template',
+      sid: CONTENT_SID,
+      variables: null
+    }
   });
-  
-  // Usar template en lugar de mensaje simple
-  await sendTemplateMessage(TO_NUMBER, FROM_NUMBER, CONTENT_SID);
-  
+
+  console.log('');
   console.log('💾 Conversación registrada para seguimiento automático');
 }
 
+// 🚀 EJECUCIÓN
 send()
   .then(() => {
     console.log('✅ Mensaje enviado correctamente');
@@ -35,5 +63,11 @@ send()
   })
   .catch((error) => {
     console.error('❌ Error:', error.message);
+    if (error.code) {
+      console.error('   Código Twilio:', error.code);
+    }
+    if (error.moreInfo) {
+      console.error('   Más info:', error.moreInfo);
+    }
     process.exit(1);
   });
