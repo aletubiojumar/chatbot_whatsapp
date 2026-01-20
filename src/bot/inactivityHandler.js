@@ -73,64 +73,116 @@ function rememberReturnState(phoneNumber) {
  * Reenvía el último mensaje interactivo guardado
  */
 async function resendLastInteractive(phoneNumber) {
-  const conv = conversationManager.getConversation(phoneNumber);
+  try {
+    const conv = conversationManager.getConversation(phoneNumber);
 
-  // Buscar en continuationReturn primero, luego en la conversación actual
-  const li = conv?.continuationReturn?.lastInteractive || conv?.lastInteractive;
+    // Buscar en continuationReturn primero, luego en la conversación actual
+    const li = conv?.continuationReturn?.lastInteractive || conv?.lastInteractive;
 
-  console.log('🔍 Debug resendLastInteractive:');
-  console.log('   continuationReturn:', conv?.continuationReturn);
-  console.log('   lastInteractive directo:', conv?.lastInteractive);
-  console.log('   li final:', li);
+    console.log('🔍 Debug resendLastInteractive:');
+    console.log('   phoneNumber:', phoneNumber);
+    console.log('   conv existe:', !!conv);
+    console.log('   continuationReturn:', conv?.continuationReturn);
+    console.log('   lastInteractive directo:', conv?.lastInteractive);
+    console.log('   li final:', li);
 
-  if (!li) {
-    console.log('⚠️  No hay lastInteractive guardado. Obteniendo último mensaje del bot...');
+    if (!li) {
+      console.log('⚠️  No hay lastInteractive guardado. Obteniendo último mensaje del bot...');
 
-    // Intentar obtener el último mensaje no vacío del bot del historial
-    const lastMsg = conversationManager.getLastNonEmptyBotMessage(phoneNumber);
-    if (lastMsg && lastMsg.trim()) {
-      console.log(`✅ Reenviando último mensaje del historial: ${lastMsg.substring(0, 50)}...`);
-      await sendSimpleMessageWithText(phoneNumber, FROM_NUMBER, lastMsg);
+      // Intentar obtener el último mensaje no vacío del bot del historial
+      const lastMsg = conversationManager.getLastNonEmptyBotMessage(phoneNumber);
+      if (lastMsg && lastMsg.trim()) {
+        console.log(`✅ Reenviando último mensaje del historial: ${lastMsg.substring(0, 50)}...`);
+        await sendSimpleMessageWithText(phoneNumber, FROM_NUMBER, lastMsg);
+
+        // ✅ ACTUALIZAR estado después de enviar
+        conversationManager.createOrUpdateConversation(phoneNumber, {
+          status: 'responded',
+          lastMessageAt: Date.now()
+        });
+        return;
+      }
+
+      console.log('⚠️  No hay mensajes en el historial. Enviando texto genérico.');
+      await sendSimpleMessageWithText(phoneNumber, FROM_NUMBER, 'Perfecto, continuemos.');
+
+      // ✅ ACTUALIZAR estado después de enviar
+      conversationManager.createOrUpdateConversation(phoneNumber, {
+        status: 'responded',
+        lastMessageAt: Date.now()
+      });
       return;
     }
 
-    console.log('⚠️  No hay mensajes en el historial. Enviando texto genérico.');
+    if (li.kind === 'template') {
+      console.log(`✅ Reenviando template: ${li.sid}`);
+
+      // OJO: NO pasar ContentVariables si no existen / están vacías
+      const vars =
+        li.variables &&
+          typeof li.variables === 'object' &&
+          !Array.isArray(li.variables) &&
+          Object.keys(li.variables).length > 0
+          ? li.variables
+          : null;
+
+      await sendTemplateMessage(phoneNumber, FROM_NUMBER, li.sid, vars);
+
+      // ✅ Cambiar status para evitar reenvío en bucle
+      conversationManager.createOrUpdateConversation(phoneNumber, {
+        status: 'responded',
+        lastMessageAt: Date.now(),
+        inactivityCheckAt: null
+      });
+
+      return;
+    }
+
+    if (li.kind === 'text') {
+      console.log(`✅ Reenviando texto: ${li.body}`);
+      await sendSimpleMessageWithText(phoneNumber, FROM_NUMBER, li.body);
+
+      // ✅ ACTUALIZAR estado después de enviar
+      conversationManager.createOrUpdateConversation(phoneNumber, {
+        status: 'responded',
+        lastMessageAt: Date.now(),
+        inactivityCheckAt: null
+      });
+      return;
+    }
+
+    console.log('⚠️  Tipo de lastInteractive desconocido:', li.kind);
     await sendSimpleMessageWithText(phoneNumber, FROM_NUMBER, 'Perfecto, continuemos.');
-    return;
-  }
 
-  if (li.kind === 'template') {
-    console.log(`✅ Reenviando template: ${li.sid}`);
-
-    // OJO: NO pasar ContentVariables si no existen / están vacías
-    const vars =
-      li.variables &&
-        typeof li.variables === 'object' &&
-        !Array.isArray(li.variables) &&
-        Object.keys(li.variables).length > 0
-        ? li.variables
-        : null;
-
-    await sendTemplateMessage(phoneNumber, FROM_NUMBER, li.sid, vars);
-
-    // ✅ Cambiar status para evitar reenvío en bucle
+    // ✅ ACTUALIZAR estado después de enviar
     conversationManager.createOrUpdateConversation(phoneNumber, {
       status: 'responded',
       lastMessageAt: Date.now(),
       inactivityCheckAt: null
     });
 
-    return;
-  }
+  } catch (error) {
+    // ✅ CAPTURAR CUALQUIER ERROR para evitar crash del servidor
+    console.error('❌ ERROR CRÍTICO en resendLastInteractive:', error);
+    console.error('   Stack:', error.stack);
 
-  if (li.kind === 'text') {
-    console.log(`✅ Reenviando texto: ${li.body}`);
-    await sendSimpleMessageWithText(phoneNumber, FROM_NUMBER, li.body);
-    return;
+    // Intentar recuperarse enviando mensaje genérico
+    try {
+      await sendSimpleMessageWithText(phoneNumber, FROM_NUMBER, 'Disculpe, hubo un error. ¿Podemos continuar?');
+      conversationManager.createOrUpdateConversation(phoneNumber, {
+        status: 'responded',
+        lastMessageAt: Date.now()
+      });
+    } catch (recoveryError) {
+      console.error('❌ No se pudo recuperar:', recoveryError);
+      // Marcar conversación como con error para revisión manual
+      conversationManager.createOrUpdateConversation(phoneNumber, {
+        status: 'error',
+        lastError: error.message,
+        lastErrorAt: Date.now()
+      });
+    }
   }
-
-  console.log('⚠️  Tipo de lastInteractive desconocido. Enviando texto genérico.');
-  await sendSimpleMessageWithText(phoneNumber, FROM_NUMBER, 'Perfecto, continuemos.');
 }
 
 /**

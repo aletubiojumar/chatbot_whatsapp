@@ -14,12 +14,18 @@ async function sendInitialTemplate(toNumber, variables = null) {
 }
 
 async function sendAttendeeTemplate(toNumber, variables = null) {
-  const sid = assertEnv('MENSAJE4_SID');
+  const sid = assertEnv('MENSAJE4_V2_SID');
   return sendTemplateMessage(toNumber, FROM_NUMBER, sid, variables);
 }
 
 async function sendCorrectionTemplate(toNumber, variables) {
-  const sid = assertEnv('MENSAJE_CORREGIR_SID');
+  const sid = assertEnv('MENSAJE_CORREGIR_V5_SID');
+  return sendTemplateMessage(toNumber, FROM_NUMBER, sid, variables);
+}
+
+// ✅ Confirmación inicial de datos (mensaje_corregir_v5)
+async function sendInitialConfirmV5Template(toNumber, variables = null) {
+  const sid = assertEnv('MENSAJE_CORREGIR_V5_SID');
   return sendTemplateMessage(toNumber, FROM_NUMBER, sid, variables);
 }
 
@@ -44,6 +50,7 @@ module.exports = {
   sendInitialTemplate,
   sendAttendeeTemplate,
   sendCorrectionTemplate,
+  sendInitialConfirmV5Template,
   sendAppointmentTemplate,
   sendContinuationTemplate,
   sendSeverityTemplate

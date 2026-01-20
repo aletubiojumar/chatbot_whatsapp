@@ -53,6 +53,7 @@ function isLikelyValidButtonReply(stage, rawMessage) {
   if (/\b(si|no|ok|vale|correcto|correctos|error|incorrecto)\b/.test(t)) return true;
 
   if (stage === 'initial') {
+    if (t.includes('continuar')) return true;
     if (t.includes('son correct')) return true;
     if (t.includes('hay algun error') || t.includes('hay algún error')) return true;
     if (t.includes('numero equivocado') || t.includes('número equivocado')) return true;
@@ -63,7 +64,10 @@ function isLikelyValidButtonReply(stage, rawMessage) {
 
   if (stage === 'attendee_select') {
     if (t.includes('otra persona')) return true;
-    if (t.includes('yo') || t.includes('asegurad')) return true;
+    if (t.includes('yo misma')) return true;
+    if (t === 'yo') return true;
+    if (t.includes('yo')) return true;
+    return false;
   }
 
   if (stage === 'appointment_select') {
@@ -314,6 +318,9 @@ function processMessage(incomingMessage, senderNumber) {
     case 'initial':
       response = handleInitialStage(incomingMessage, senderNumber);
       break;
+    case 'initial_confirm':
+      response = handleInitialConfirmStage(incomingMessage, senderNumber);
+      break;
     case 'awaiting_corrections':
       response = handleAwaitingCorrectionsStage(incomingMessage, senderNumber);
       break;
@@ -356,34 +363,25 @@ function processMessage(incomingMessage, senderNumber) {
 function handleInitialStage(rawMessage, senderNumber) {
   const mensaje = normalizeText(rawMessage);
 
-  // ✅ Reconocer confirmación de datos
-  if (mensaje.includes('son correct') || mensaje.includes('correcto')) {
+  // ✅ Botón "Continuar" del mensaje inicial: pasar a confirmación inicial (mensaje_corregir_v5)
+  if (mensaje.includes('continuar')) {
+    const conv = conversationManager.getConversation(senderNumber) || {};
+    const direccion = conv.direccion || 'N/D';
+    const asegurado = conv.asegurado || 'N/D';
+    const fecha = conv.fechaSiniestro || 'N/D';
+
     conversationManager.createOrUpdateConversation(senderNumber, {
-      stage: 'attendee_select',
-      status: 'awaiting_attendee',
+      stage: 'initial_confirm',
+      status: 'awaiting_initial_confirm_template',
       lastPromptType: 'buttons'
     });
-    return ' ';
-  }
 
-  // ✅ Reconocer confirmación de identidad
-  if (mensaje.includes('si') || mensaje.includes('sí') || mensaje.includes('asegurad')) {
-    conversationManager.createOrUpdateConversation(senderNumber, {
-      stage: 'attendee_select',
-      status: 'awaiting_attendee',
-      lastPromptType: 'buttons'
-    });
-    return ' ';
-  }
-
-  // ✅ Detectar errores en datos
-  if (mensaje.includes('hay algun error') || mensaje.includes('hay algún error') || mensaje.includes('error')) {
-    conversationManager.createOrUpdateConversation(senderNumber, {
-      stage: 'awaiting_corrections',
-      status: 'responded',
-      lastPromptType: 'text'
-    });
-    return 'De acuerdo. Por favor, indíquenos los datos correctos en un solo mensaje.\n\nEjemplo:\n- Dirección: ...\n- Fecha de ocurrencia: ...\n- Nombre del asegurado: ...';
+    return (
+      'Por favor, verifique que los siguientes datos sean correctos:\n\n' +
+      `* Dirección: ${direccion}\n` +
+      `* Asegurado: ${asegurado}\n` +
+      `* Fecha del siniestro: ${fecha}`
+    );
   }
 
   // ✅ Número equivocado
@@ -396,13 +394,31 @@ function handleInitialStage(rawMessage, senderNumber) {
     return responses.noEsAsegurado;
   }
 
-  // ✅ Usuario ocupado
-  if (mensaje === '3' || mensaje.includes('no puedo') || mensaje.includes('ahora no puedo')) {
-    conversationManager.snoozeConversation(senderNumber, 6 * 60 * 60 * 1000); // 6 horas
-    return responses.ocupado;
+  return responses.noEntiendo || 'No le he entendido. Por favor, pulse "Continuar" o "Número equivocado".';
+}
+
+function handleInitialConfirmStage(rawMessage, senderNumber) {
+  const m = normalizeText(rawMessage);
+
+  if (m.includes('si') && m.includes('correct')) {
+    conversationManager.createOrUpdateConversation(senderNumber, {
+      stage: 'attendee_select',
+      status: 'awaiting_attendee',
+      lastPromptType: 'buttons'
+    });
+    return ' ';
   }
 
-  return responses.default;
+  if (m.includes('no') && m.includes('error')) {
+    conversationManager.createOrUpdateConversation(senderNumber, {
+      stage: 'awaiting_corrections',
+      status: 'responded',
+      lastPromptType: 'text'
+    });
+    return 'De acuerdo. Por favor, indíquenos los datos correctos en un solo mensaje.\n\nEjemplo:\n- Dirección: ...\n- Fecha del siniestro: ...\n- Nombre del asegurado: ...';
+  }
+
+  return 'No le he entendido. Por favor, pulse uno de los botones.';
 }
 
 function handleAwaitingCorrectionsStage(rawMessage, senderNumber) {
@@ -454,7 +470,8 @@ function handleConfirmingCorrectionsStage(rawMessage, senderNumber) {
 function handleAttendeeSelectStage(rawMessage, senderNumber) {
   const m = normalizeText(rawMessage);
 
-  if (m.includes('otra persona')) {
+  // ✅ Botón exacto: "Otra persona"
+  if (m === 'otra persona' || m.includes('otra persona')) {
     conversationManager.createOrUpdateConversation(senderNumber, {
       stage: 'awaiting_other_person_details',
       status: 'responded',
@@ -463,7 +480,8 @@ function handleAttendeeSelectStage(rawMessage, senderNumber) {
     return 'Por favor, indique en un solo mensaje: nombre, teléfono y relación con el asegurado.';
   }
 
-  if (m.includes('yo') || m.includes('asegurad')) {
+  // ✅ Botón exacto: "Yo misma" (y variantes)
+  if (m === 'yo misma' || m.includes('yo misma') || m === 'yo' || m.includes('yo')) {
     conversationManager.createOrUpdateConversation(senderNumber, {
       stage: 'awaiting_claim_type',
       status: 'responded',
@@ -472,6 +490,7 @@ function handleAttendeeSelectStage(rawMessage, senderNumber) {
     return CLAIM_TYPE_MENU;
   }
 
+  // Si no encaja, re-mandar botones
   conversationManager.createOrUpdateConversation(senderNumber, {
     stage: 'attendee_select',
     status: 'awaiting_attendee',
@@ -509,17 +528,6 @@ function handleClaimTypeStage(rawMessage, senderNumber) {
     claimTypeLabel: chosen.label
   });
 
-  // if (isForcedPresentialClaimType(chosen.label)) {
-  //   conversationManager.createOrUpdateConversation(senderNumber, {
-  //     appointmentMode: 'presencial',
-  //     presentialForced: true,
-  //     stage: 'completed',
-  //     status: 'completed',
-  //     lastPromptType: 'text'
-  //   });
-  //   return 'Cita solo disponible de forma presencial, administración se pondrá en contacto con usted.';
-  // }
-
   if (chosen.index >= 3) {
     conversationManager.createOrUpdateConversation(senderNumber, {
       appointmentMode: 'presencial',
@@ -544,7 +552,6 @@ function handleSeverityStage(rawMessage, senderNumber) {
   const chosen = extractSeverityByChoice(rawMessage);
 
   if (!chosen) {
-    // No reconoció la opción, reenviar template
     conversationManager.createOrUpdateConversation(senderNumber, {
       stage: 'awaiting_severity',
       status: 'awaiting_severity_template',
@@ -553,13 +560,11 @@ function handleSeverityStage(rawMessage, senderNumber) {
     return ' ';
   }
 
-  // Guardar la selección
   conversationManager.createOrUpdateConversation(senderNumber, {
     severityIndex: chosen.index,
     severityLabel: chosen.label
   });
 
-  // ✅ Si es opción 3, 4 o 5 → FORZAR PRESENCIAL Y FINALIZAR
   if (chosen.index >= 3) {
     conversationManager.createOrUpdateConversation(senderNumber, {
       appointmentMode: 'presencial',
@@ -571,8 +576,6 @@ function handleSeverityStage(rawMessage, senderNumber) {
     return 'Cita solo disponible de forma presencial, administración se pondrá en contacto con usted.';
   }
 
-
-  // ✅ Si es opción 1 o 2 → PERMITIR ELEGIR
   conversationManager.createOrUpdateConversation(senderNumber, {
     stage: 'appointment_select',
     status: 'awaiting_appointment',
