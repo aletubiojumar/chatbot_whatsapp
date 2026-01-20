@@ -68,54 +68,46 @@ async function sendSimpleMessageWithText(toNumber, fromNumber, body) {
 }
 
 /**
- * Lista Content Templates (Content API)
- * OJO: Twilio helper espera `uri`, no `url`.
+ * ✅ CORREGIDO: Lista Content Templates usando el SDK de Twilio correctamente
  */
 async function listContentTemplates({ pageSize = 50, limit = 200 } = {}) {
   const client = getClient();
 
-  const results = [];
-  let pageToken = null;
+  try {
+    console.log('🔍 Obteniendo templates de Twilio Content API...\n');
+    
+    const contents = await client.content.v1.contents.list({ 
+      pageSize, 
+      limit 
+    });
+    
+    const results = contents.map(c => ({
+      sid: c.sid,
+      friendlyName: c.friendlyName,
+      language: c.language,
+      types: c.types ? Object.keys(c.types) : [],
+      // Agregar estado de aprobación si está disponible
+      approvalRequests: c.approvalRequests || 'N/A'
+    }));
 
-  while (results.length < limit) {
-    const qs = new URLSearchParams();
-    qs.set('PageSize', String(pageSize));
-    if (pageToken) qs.set('PageToken', pageToken);
-
-    // ✅ Content API está en content.twilio.com (no en api.twilio.com)
-    const uri = `https://content.twilio.com/v1/Content?${qs.toString()}`;
-
-    const resp = await client.request({
-      method: 'GET',
-      uri
+    console.log(`📦 Templates encontrados: ${results.length}\n`);
+    console.log('─'.repeat(80));
+    
+    results.forEach(t => {
+      console.log(`📋 ${t.friendlyName}`);
+      console.log(`   SID: ${t.sid}`);
+      console.log(`   Idioma: ${t.language}`);
+      console.log(`   Tipos: ${t.types.join(', ')}`);
+      console.log('─'.repeat(80));
     });
 
-    const body = resp?.body || {};
-    const contents = body.contents || [];
-    const meta = body.meta || {};
-    const nextPageUrl = meta.next_page_url || null;
-
-    for (const c of contents) {
-      results.push({
-        sid: c.sid,
-        friendlyName: c.friendly_name,
-        language: c.language,
-        types: c.types ? Object.keys(c.types) : []
-      });
-      if (results.length >= limit) break;
-    }
-
-    if (!nextPageUrl) break;
-    pageToken = new URL(nextPageUrl).searchParams.get('PageToken');
-    if (!pageToken) break;
+    return results;
+  } catch (error) {
+    console.error('\n❌ Error listando templates:', error.message);
+    if (error.code) console.error('   Código Twilio:', error.code);
+    if (error.moreInfo) console.error('   Más info:', error.moreInfo);
+    throw error;
   }
-
-  console.log(`\n📦 Templates encontrados: ${results.length}\n`);
-  results.forEach(t => {
-    console.log(`- ${t.friendlyName} | ${t.sid} | ${t.language} | ${t.types.join(', ')}`);
-  });
-
-  return results;
 }
 
 module.exports = {

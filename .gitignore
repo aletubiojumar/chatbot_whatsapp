@@ -10,6 +10,10 @@ node_modules/
 data/
 *.json
 
+# Permitir los manifests de Node aunque ignoremos *.json
+!package.json
+!package-lock.json
+
 # Logs
 logs/
 *.log
@@ -44,3 +48,6 @@ build/
 # Ngrok
 ngrok
 ngrok.exe
+
+# aws
+*.pem
