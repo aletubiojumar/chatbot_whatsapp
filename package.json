@@ -1,0 +1,36 @@
+{
+  "name": "chatbot_whatsapp",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node src/bot/index.js",
+    "dev": "nodemon src/bot/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "send": "node src/sendInitialMessage.js",
+    "list-templates": "node src/listTemplates.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aletubiojumar/chatbot_whatsapp.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/aletubiojumar/chatbot_whatsapp/issues"
+  },
+  "homepage": "https://github.com/aletubiojumar/chatbot_whatsapp#readme",
+  "dependencies": {
+    "axios": "^1.13.2",
+    "body-parser": "^2.2.1",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "node-cron": "^4.2.1",
+    "twilio": "^5.11.1"
+  },
+  "devDependencies": {
+    "ngrok": "^5.0.0-beta.2",
+    "nodemon": "^3.1.11"
+  }
+}
