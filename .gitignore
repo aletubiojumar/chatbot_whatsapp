@@ -49,5 +49,7 @@ build/
 ngrok
 ngrok.exe
 
-# aws
+# SSH Keys
 *.pem
+*.key
+*:Zone.Identifier
