@@ -58,7 +58,6 @@ async function sendTemplateMessage(toNumber, contentSid, contentVariables = {}) 
   });
 }
 
-
 module.exports = {
   sendSimpleMessageWithText,
   sendTemplateMessage,
