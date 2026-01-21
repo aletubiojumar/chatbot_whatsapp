@@ -113,10 +113,112 @@ function getConversation(phoneNumber) {
   return conversations[key] || null;
 }
 
+// ✅ MÉTODO AÑADIDO: getAllConversations
+function getAllConversations() {
+  const conversations = getConversations();
+  return Object.values(conversations);
+}
+
+// ✅ Métodos adicionales para reminderScheduler
+function getConversationsNeedingReminder() {
+  const conversations = getAllConversations();
+  const now = Date.now();
+  
+  return conversations.filter(conv => {
+    if (conv.status !== 'pending') return false;
+    if (!conv.nextReminderAt) return false;
+    if (conv.attempts >= 3) return false;
+    return conv.nextReminderAt <= now;
+  });
+}
+
+function getConversationsNeedingEscalation() {
+  const conversations = getAllConversations();
+  
+  return conversations.filter(conv => {
+    return conv.attempts >= 3 && 
+           conv.status === 'pending' && 
+           !conv.escalatedAt;
+  });
+}
+
+function incrementAttempts(phoneNumber) {
+  const key = normalizeWhatsAppNumber(phoneNumber) || phoneNumber;
+  const conv = getConversation(key);
+  
+  if (!conv) return null;
+  
+  const newAttempts = (conv.attempts || 0) + 1;
+  const nextReminder = Date.now() + (6 * 60 * 60 * 1000); // 6 horas
+  
+  return createOrUpdateConversation(key, {
+    attempts: newAttempts,
+    nextReminderAt: nextReminder,
+    lastReminderAt: Date.now()
+  });
+}
+
+function markAsEscalated(phoneNumber) {
+  const key = normalizeWhatsAppNumber(phoneNumber) || phoneNumber;
+  return createOrUpdateConversation(key, {
+    status: 'escalated',
+    stage: 'escalated',
+    escalatedAt: Date.now()
+  });
+}
+
+function clearSnoozed(phoneNumber) {
+  const key = normalizeWhatsAppNumber(phoneNumber) || phoneNumber;
+  return createOrUpdateConversation(key, {
+    status: 'pending',
+    snoozedUntil: null
+  });
+}
+
+// ✅ MÉTODO AÑADIDO: getInactiveConversations (para inactivityHandler)
+function getInactiveConversations(inactivityTimeoutMs) {
+  const conversations = getAllConversations();
+  const now = Date.now();
+  
+  return conversations.filter(conv => {
+    // Solo conversaciones pendientes
+    if (conv.status !== 'pending') return false;
+    
+    // Si está "snoozed", ignorar hasta que expire
+    if (conv.snoozedUntil && conv.snoozedUntil > now) return false;
+    
+    // Si no tiene lastUserMessageAt, no es inactiva
+    if (!conv.lastUserMessageAt) return false;
+    
+    // Verificar si ha pasado el timeout
+    const timeSinceLastMessage = now - conv.lastUserMessageAt;
+    return timeSinceLastMessage >= inactivityTimeoutMs;
+  });
+}
+
+// ✅ MÉTODO AÑADIDO: snoozeConversation (para inactivityHandler)
+function snoozeConversation(phoneNumber, snoozeMs) {
+  const key = normalizeWhatsAppNumber(phoneNumber) || phoneNumber;
+  const snoozedUntil = Date.now() + snoozeMs;
+  
+  return createOrUpdateConversation(key, {
+    snoozedUntil,
+    lastSnoozedAt: Date.now()
+  });
+}
+
 
 module.exports = {
   getConversations,
   getConversation,
+  getAllConversations,
+  getConversationsNeedingReminder,
+  getConversationsNeedingEscalation,
+  getInactiveConversations,
+  incrementAttempts,
+  markAsEscalated,
+  clearSnoozed,
+  snoozeConversation,
   saveConversations,
   createOrUpdateConversation,
   recordUserMessage,
