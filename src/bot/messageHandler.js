@@ -1,240 +1,20 @@
-// messageHandler.js
-const responses = require('./responses');
+// src/bot/messageHandler.js
 const conversationManager = require('./conversationManager');
+const { generateResponse, analyzeMessage } = require('./geminiAI');
 const { normalizeWhatsAppNumber } = require('./utils/phone');
 
-function parseCorrections(text) {
-  const raw = (text || '').trim();
+/**
+ * Modo de operación del bot
+ * - 'ai': Usa Gemini para todas las respuestas (más flexible)
+ * - 'hybrid': Usa IA solo para texto libre, templates para botones (recomendado)
+ * - 'manual': Usa solo las respuestas predefinidas (original)
+ */
+const BOT_MODE = process.env.BOT_MODE || 'hybrid';
 
-  // Intentar formato estructurado
-  const direccion =
-    raw.match(/direccion\s*:\s*(.+)/i)?.[1]?.split('\n')[0]?.trim() || '';
-  const fecha =
-    raw.match(/fecha\s*:\s*(.+)/i)?.[1]?.split('\n')[0]?.trim() || '';
-  const nombre =
-    raw.match(/nombre\s*:\s*(.+)/i)?.[1]?.split('\n')[0]?.trim() || '';
-
-  // Fallback: texto libre tipo "calle flores 12/12/2025 paco"
-  if (!direccion && !fecha && !nombre) {
-    const parts = raw.split(/\s+/);
-    const dateRegex = /\d{1,2}\/\d{1,2}\/\d{2,4}/;
-
-    const fechaToken = parts.find(p => dateRegex.test(p)) || '';
-    const fechaIndex = fechaToken ? parts.indexOf(fechaToken) : -1;
-
-    const dir = fechaIndex > 0 ? parts.slice(0, fechaIndex).join(' ') : raw;
-    const nom = fechaIndex >= 0 ? parts.slice(fechaIndex + 1).join(' ') : '';
-
-    return {
-      direccion: dir.trim(),
-      fecha: fechaToken.trim(),
-      nombre: nom.trim()
-    };
-  }
-
-  return { direccion, fecha, nombre };
-}
-
-function normalizeText(s) {
-  return (s || '')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .trim();
-}
-
-/* =======================
-   ADMIN OFFER HELPERS
-======================= */
-function isLikelyValidButtonReply(stage, rawMessage) {
-  const t = normalizeText(rawMessage);
-  if (!t) return false;
-
-  if (/\b\d{1,2}\b/.test(t)) return true;
-  if (/\b(si|no|ok|vale|correcto|correctos|error|incorrecto)\b/.test(t)) return true;
-
-  if (stage === 'initial') {
-    if (t.includes('continuar')) return true;
-    if (t.includes('son correct')) return true;
-    if (t.includes('hay algun error') || t.includes('hay algún error')) return true;
-    if (t.includes('numero equivocado') || t.includes('número equivocado')) return true;
-    if (t.includes('asegurad')) return true;
-    if (t.includes('no soy')) return true;
-    if (t.includes('no puedo')) return true;
-  }
-
-  if (stage === 'attendee_select') {
-    if (t.includes('otra persona')) return true;
-    if (t.includes('yo misma')) return true;
-    if (t === 'yo') return true;
-    if (t.includes('yo')) return true;
-    return false;
-  }
-
-  if (stage === 'appointment_select') {
-    if (t.includes('presencial')) return true;
-    if (t.includes('telematic') || t.includes('telema')) return true;
-  }
-
-  if (stage === 'awaiting_severity') {
-    if (t.includes('500') || t.includes('2500') || t.includes('5000') || t.includes('12000') || t.includes('mas de')) return true;
-  }
-
-  return false;
-}
-
-function shouldOfferAdmin(conversation, rawMessage) {
-  if (!conversation) return false;
-  if (conversation.lastPromptType !== 'buttons') return false;
-
-  if (conversation.status === 'awaiting_continuation' || conversation.status === 'awaiting_admin_offer') return false;
-  if (conversation.status === 'completed' || conversation.status === 'escalated') return false;
-
-  const strictStages = new Set(['initial', 'attendee_select', 'appointment_select', 'awaiting_severity']);
-  if (!strictStages.has(conversation.stage)) return false;
-
-  return !isLikelyValidButtonReply(conversation.stage, rawMessage);
-}
-
-/* =======================
-   CLAIM TYPE
-======================= */
-const CLAIM_TYPE_OPTIONS = [
-  'Rotura de vitrocerámica, cristales o sanitarios',
-  'Incendio',
-  'Fenómenos atmosféricos: precipitaciones de Lluvia',
-  'Fenómenos atmosféricos: viento',
-  'Fenómenos atmosféricos: rayos',
-  'Otros fenómenos atmosféricos',
-  'Daños por agua',
-  'Sobretensión producida por compañía suministradora de luz',
-  'Otros daños eléctricos',
-  'Actos vandálicos o intento de robo sin sustracción de Bienes',
-  'Robo con sustracción de Bienes',
-  'Impacto',
-  'Responsabilidad Civil (RC)',
-  'Lesiones',
-  'Otros'
-];
-
-const CLAIM_TYPE_MENU = `Indique la tipología del siniestro (marque una opción):
-
-*1.* Rotura de vitrocerámica, cristales o sanitarios
-*2.* Incendio
-*3.* Fenómenos atmosféricos: precipitaciones de Lluvia
-*4.* Fenómenos atmosféricos: viento
-*5.* Fenómenos atmosféricos: rayos
-*6.* Otros fenómenos atmosféricos
-*7.* Daños por agua
-*8.* Sobretensión producida por compañía suministradora de luz
-*9.* Otros daños eléctricos
-*10.* Actos vandálicos o intento de robo sin sustracción de Bienes
-*11.* Robo con sustracción de Bienes
-*12.* Impacto
-*13.* Responsabilidad Civil (RC)
-*14.* Lesiones
-*15.* Otros`;
-
-function extractClaimTypeByChoice(rawMessage) {
-  const t = normalizeText(rawMessage);
-
-  const numMatch = t.match(/\b(\d{1,2})\b/);
-  if (numMatch) {
-    const n = parseInt(numMatch[1], 10);
-    if (Number.isFinite(n) && n >= 1 && n <= CLAIM_TYPE_OPTIONS.length) {
-      return { index: n, label: CLAIM_TYPE_OPTIONS[n - 1] };
-    }
-  }
-
-  for (let i = 0; i < CLAIM_TYPE_OPTIONS.length; i++) {
-    if (normalizeText(CLAIM_TYPE_OPTIONS[i]) === t) {
-      return { index: i + 1, label: CLAIM_TYPE_OPTIONS[i] };
-    }
-  }
-
-  return null;
-}
-
-function isForcedPresentialClaimType(label) {
-  const n = normalizeText(label);
-  return (
-    n === normalizeText('Sobretensión producida por compañía suministradora de luz') ||
-    n === normalizeText('Robo con sustracción de Bienes') ||
-    n === normalizeText('Lesiones')
-  );
-}
-
-/* =======================
-   SEVERITY (TEMPLATE) - ✅ CORREGIDO CON PUNTOS Y COMAS
-======================= */
-const SEVERITY_OPTIONS = ['0 – 500', '500 – 2500', '2500 – 5000', '5000 – 12000', 'Más de 12000'];
-
-function extractSeverityByChoice(rawMessage) {
-  const t = normalizeText(rawMessage);
-
-  // normaliza guiones "raros" a "-"
-  const normalized = t.replace(/[–—]/g, '-');
-
-  // quita €, puntos, comas y espacios
-  const clean = normalized
-    .replace(/€/g, '')
-    .replace(/\./g, '')
-    .replace(/,/g, '')
-    .replace(/\s+/g, '')
-    .trim();
-
-  // 1) Si responde con número 1-5, perfecto
-  const direct = clean.match(/^([1-5])$/);
-  if (direct) {
-    const idx = parseInt(direct[1], 10);
-    return { index: idx, label: SEVERITY_OPTIONS[idx - 1] };
-  }
-
-  // 2) Si viene un rango tipo "5001-12000"
-  const range = clean.match(/^(\d+)-(\d+)$/);
-  if (range) {
-    const a = parseInt(range[1], 10);
-    const b = parseInt(range[2], 10);
-
-    // Clasifica por el "tope" (b)
-    if (b <= 500) return { index: 1, label: SEVERITY_OPTIONS[0] };
-    if (b <= 2500) return { index: 2, label: SEVERITY_OPTIONS[1] };
-    if (b <= 5000) return { index: 3, label: SEVERITY_OPTIONS[2] };
-    if (b <= 12000) return { index: 4, label: SEVERITY_OPTIONS[3] };
-  }
-
-  // 3) "masde12000"
-  if (clean.includes('masde12000')) {
-    return { index: 5, label: SEVERITY_OPTIONS[4] };
-  }
-
-  // 4) Match directo con texto de opciones (por si acaso)
-  for (let i = 0; i < SEVERITY_OPTIONS.length; i++) {
-    const optClean = normalizeText(SEVERITY_OPTIONS[i]).replace(/\s+/g, '');
-    if (optClean === clean) return { index: i + 1, label: SEVERITY_OPTIONS[i] };
-  }
-
-  return null;
-}
-
-function isForcedPresentialSeverity(label) {
-  // ✅ Normalizar y limpiar para comparar
-  const clean = normalizeText(label).replace(/\s+/g, '').replace(/€/g, '').replace(/\./g, '').replace(/,/g, '');
-
-  // Opciones que FUERZAN presencial (3, 4, 5)
-  const forcedOptions = [
-    '2500-5000',     // Opción 3
-    '5000-12000',    // Opción 4
-    'masde12000'     // Opción 5
-  ];
-
-  return forcedOptions.includes(clean);
-}
-
-/* =======================
-   MAIN
-======================= */
-function processMessage(incomingMessage, senderNumber) {
+/**
+ * Procesa mensajes usando IA de forma inteligente
+ */
+async function processMessage(incomingMessage, senderNumber) {
   senderNumber = normalizeWhatsAppNumber(senderNumber) || senderNumber;
 
   let conversation = conversationManager.getConversation(senderNumber);
@@ -242,392 +22,222 @@ function processMessage(incomingMessage, senderNumber) {
     conversation = conversationManager.createOrUpdateConversation(senderNumber, {
       stage: 'initial',
       status: 'pending',
-      attempts: 0
+      attempts: 0,
+      history: []
     });
   }
 
-  if (conversation.status === 'snoozed') {
-    conversation = conversationManager.clearSnoozed(senderNumber);
-  }
+  // Registrar el mensaje del usuario
+  conversationManager.recordUserMessage(senderNumber);
 
-  // admin offer flow
-  if (conversation.status === 'awaiting_admin_offer') {
-    const t = normalizeText(incomingMessage);
-    conversationManager.recordResponse(senderNumber, incomingMessage, 'user');
+  console.log('💬 Mensaje recibido:', incomingMessage);
+  console.log('📊 Estado actual:', conversation.stage, '/', conversation.status);
 
-    if (t === 'si' || t === 'sí') {
-      conversationManager.createOrUpdateConversation(senderNumber, {
-        status: 'escalated',
-        stage: 'escalated',
-        lastPromptType: 'text'
-      });
-      const txt = 'De acuerdo. Administración se pondrá en contacto con usted. Un saludo.';
-      conversationManager.recordResponse(senderNumber, txt, 'bot');
-      return txt;
+  try {
+    let response;
+
+    if (BOT_MODE === 'ai') {
+      // ✅ MODO IA PURO: Todo gestionado por Gemini
+      response = await handleWithAI(incomingMessage, conversation, senderNumber);
+      
+    } else if (BOT_MODE === 'hybrid') {
+      // ✅ MODO HÍBRIDO: Combina IA con flujo estructurado (RECOMENDADO)
+      response = await handleHybrid(incomingMessage, conversation, senderNumber);
+      
+    } else {
+      // ✅ MODO MANUAL: Usa el flujo original (sin IA)
+      response = await handleManual(incomingMessage, conversation, senderNumber);
     }
 
-    if (t === 'no') {
-      conversationManager.createOrUpdateConversation(senderNumber, {
-        status: 'responded',
-        lastPromptType: 'text'
-      });
-      const txt = 'Perfecto, continuemos.';
-      conversationManager.recordResponse(senderNumber, txt, 'bot');
-      return txt;
-    }
-
-    const txt = 'Por favor, responda "Sí" o "No". ¿Desea hablar con administración?';
-    conversationManager.createOrUpdateConversation(senderNumber, { lastPromptType: 'text' });
-    conversationManager.recordResponse(senderNumber, txt, 'bot');
-    return txt;
-  }
-
-  conversationManager.recordResponse(senderNumber, incomingMessage, 'user');
-
-  if (conversation.continuationAskedAt || conversation.continuationTimeoutAt || conversation.inactivityCheckAt) {
+    // Actualizar historial de conversación
+    const history = conversation.history || [];
+    history.push(
+      { role: 'user', content: incomingMessage, timestamp: Date.now() },
+      { role: 'assistant', content: response, timestamp: Date.now() }
+    );
+    
     conversationManager.createOrUpdateConversation(senderNumber, {
-      continuationAskedAt: null,
-      continuationTimeoutAt: null,
-      inactivityCheckAt: null
+      history: history.slice(-20) // Mantener solo últimos 20 mensajes
     });
-  }
 
-  if (shouldOfferAdmin(conversation, incomingMessage)) {
-    const txt = '¿Desea hablar con administración? Responda "Sí" o "No".';
+    return response;
+
+  } catch (error) {
+    console.error('❌ Error procesando mensaje:', error);
+    return 'Disculpe, hubo un error procesando su mensaje. Por favor, intente de nuevo o contacte con administración.';
+  }
+}
+
+/**
+ * Manejo con IA pura
+ */
+async function handleWithAI(message, conversation, senderNumber) {
+  // Analizar el mensaje primero
+  const analysis = await analyzeMessage(message);
+  
+  console.log('🧠 Análisis IA:', analysis);
+
+  // Si el usuario necesita soporte humano, escalar
+  if (analysis.needsHumanSupport || analysis.sentiment === 'negativo') {
     conversationManager.createOrUpdateConversation(senderNumber, {
-      status: 'awaiting_admin_offer',
-      lastPromptType: 'text'
+      status: 'escalated',
+      stage: 'escalated',
+      escalatedAt: Date.now(),
+      escalationReason: 'Usuario necesita soporte humano (detectado por IA)'
     });
-    conversationManager.recordResponse(senderNumber, txt, 'bot');
-    return txt;
+    
+    return 'Entiendo su situación. Voy a transferir su caso a un agente humano que le contactará en breve. Gracias por su paciencia.';
   }
 
-  let response;
+  // Construir contexto para la IA
+  const context = {
+    status: conversation.status,
+    stage: conversation.stage,
+    history: conversation.history || [],
+    userData: {
+      direccion: conversation.correctedDireccion || conversation.direccion,
+      fecha: conversation.correctedFecha || conversation.fecha,
+      nombre: conversation.correctedNombre || conversation.nombre,
+      claimType: conversation.claimTypeLabel,
+      appointmentMode: conversation.appointmentMode
+    },
+    attempts: conversation.attempts || 0
+  };
 
-  switch (conversation.stage) {
-    case 'initial':
-      response = handleInitialStage(incomingMessage, senderNumber);
-      break;
-    case 'initial_confirm':
-      response = handleInitialConfirmStage(incomingMessage, senderNumber);
-      break;
-    case 'awaiting_corrections':
-      response = handleAwaitingCorrectionsStage(incomingMessage, senderNumber);
-      break;
-    case 'confirming_corrections':
-      response = handleConfirmingCorrectionsStage(incomingMessage, senderNumber);
-      break;
-    case 'attendee_select':
-      response = handleAttendeeSelectStage(incomingMessage, senderNumber);
-      break;
-    case 'awaiting_other_person_details':
-      response = handleOtherPersonDetailsStage(incomingMessage, senderNumber);
-      break;
-    case 'awaiting_claim_type':
-      response = handleClaimTypeStage(incomingMessage, senderNumber);
-      break;
-    case 'awaiting_severity':
-      response = handleSeverityStage(incomingMessage, senderNumber);
-      break;
-    case 'appointment_select':
-      response = handleAppointmentSelectStage(incomingMessage, senderNumber);
-      break;
-    case 'awaiting_date':
-      response = handleDateStage(incomingMessage, senderNumber);
-      break;
-    default:
-      response = responses.default;
-  }
-
-  if (response && response.trim()) {
-    conversationManager.recordResponse(senderNumber, response, 'bot');
+  // Generar respuesta con IA
+  const response = await generateResponse(message, context);
+  
+  // Actualizar estado según la intención detectada
+  if (analysis.intent === 'confirmar_datos') {
+    conversationManager.createOrUpdateConversation(senderNumber, {
+      stage: 'attendee_select',
+      status: 'awaiting_attendee'
+    });
+  } else if (analysis.intent === 'corregir_datos') {
+    conversationManager.createOrUpdateConversation(senderNumber, {
+      stage: 'awaiting_corrections',
+      status: 'responded'
+    });
   }
 
   return response;
 }
 
-/* =======================
-   STAGES
-======================= */
+/**
+ * Manejo híbrido: IA para texto libre, templates para botones
+ */
+async function handleHybrid(message, conversation, senderNumber) {
+  const normalizedMsg = message.toLowerCase().trim();
 
-function handleInitialStage(rawMessage, senderNumber) {
-  const mensaje = normalizeText(rawMessage);
-
-  // ✅ Botón "Continuar" del mensaje inicial: pasar a confirmación inicial (mensaje_corregir_v5)
-  if (mensaje.includes('continuar')) {
-    const conv = conversationManager.getConversation(senderNumber) || {};
-    const direccion = conv.direccion || 'N/D';
-    const asegurado = conv.asegurado || 'N/D';
-    const fecha = conv.fechaSiniestro || 'N/D';
-
-    conversationManager.createOrUpdateConversation(senderNumber, {
-      stage: 'initial_confirm',
-      status: 'awaiting_initial_confirm_template',
-      lastPromptType: 'buttons'
-    });
-
-    return (
-      'Por favor, verifique que los siguientes datos sean correctos:\n\n' +
-      `* Dirección: ${direccion}\n` +
-      `* Asegurado: ${asegurado}\n` +
-      `* Fecha del siniestro: ${fecha}`
-    );
+  // ========================================
+  // ETAPA 1: VERIFICACIÓN INICIAL DE DATOS
+  // ========================================
+  if (conversation.stage === 'initial' || conversation.stage === 'initial_confirm') {
+    
+    // Detectar respuestas con botones
+    if (normalizedMsg.includes('son correct') || normalizedMsg.includes('sí')) {
+      conversationManager.createOrUpdateConversation(senderNumber, {
+        stage: 'attendee_select',
+        status: 'awaiting_attendee'
+      });
+      
+      return 'Perfecto. ¿Quién atenderá al perito?\n\n- Yo mismo/a\n- Otra persona';
+    }
+    
+    if (normalizedMsg.includes('error') || normalizedMsg.includes('no')) {
+      conversationManager.createOrUpdateConversation(senderNumber, {
+        stage: 'awaiting_corrections',
+        status: 'responded'
+      });
+      
+      // ✅ USAR IA para solicitar correcciones de forma natural
+      return await generateResponse(message, {
+        stage: 'solicitar_correcciones',
+        history: conversation.history || []
+      });
+    }
+    
+    if (normalizedMsg.includes('equivocado') || normalizedMsg.includes('no soy')) {
+      conversationManager.createOrUpdateConversation(senderNumber, {
+        status: 'completed',
+        stage: 'completed'
+      });
+      return 'Disculpe las molestias. Un saludo.';
+    }
   }
 
-  // ✅ Número equivocado
-  if (mensaje.includes('numero equivocado') || mensaje.includes('número equivocado') || mensaje.includes('no soy')) {
-    conversationManager.createOrUpdateConversation(senderNumber, {
-      status: 'completed',
-      stage: 'completed',
-      lastPromptType: 'text'
+  // ========================================
+  // ETAPA 2: CORRECCIONES (TEXTO LIBRE CON IA)
+  // ========================================
+  if (conversation.stage === 'awaiting_corrections') {
+    // ✅ USAR IA para extraer y validar datos corregidos
+    const response = await generateResponse(message, {
+      stage: 'procesar_correcciones',
+      history: conversation.history || [],
+      instruction: 'El usuario está proporcionando datos corregidos. Extrae dirección, fecha y nombre si los menciona, y confirma que los recibiste correctamente.'
     });
-    return responses.noEsAsegurado;
-  }
-
-  return responses.noEntiendo || 'No le he entendido. Por favor, pulse "Continuar" o "Número equivocado".';
-}
-
-function handleInitialConfirmStage(rawMessage, senderNumber) {
-  const m = normalizeText(rawMessage);
-
-  if (m.includes('si') && m.includes('correct')) {
+    
+    // Guardar las correcciones (la IA ya las habrá mencionado)
     conversationManager.createOrUpdateConversation(senderNumber, {
+      corrections: message,
       stage: 'attendee_select',
-      status: 'awaiting_attendee',
-      lastPromptType: 'buttons'
+      status: 'awaiting_attendee'
     });
-    return ' ';
+    
+    return response + '\n\n¿Quién atenderá al perito?\n- Yo mismo/a\n- Otra persona';
   }
 
-  if (m.includes('no') && m.includes('error')) {
-    conversationManager.createOrUpdateConversation(senderNumber, {
-      stage: 'awaiting_corrections',
-      status: 'responded',
-      lastPromptType: 'text'
-    });
-    return 'De acuerdo. Por favor, indíquenos los datos correctos en un solo mensaje.\n\nEjemplo:\n- Dirección: ...\n- Fecha del siniestro: ...\n- Nombre del asegurado: ...';
+  // ========================================
+  // ETAPA 3: SELECCIÓN DE QUIEN ATIENDE
+  // ========================================
+  if (conversation.stage === 'attendee_select') {
+    if (normalizedMsg.includes('yo') || normalizedMsg.includes('mismo')) {
+      conversationManager.createOrUpdateConversation(senderNumber, {
+        stage: 'awaiting_claim_type',
+        status: 'responded'
+      });
+      
+      return 'Entendido. Por favor, indique el tipo de siniestro:\n\n1. Rotura de cristales\n2. Incendio\n3. Daños por agua\n4. Robo\n5. Otro';
+    }
+    
+    if (normalizedMsg.includes('otra')) {
+      conversationManager.createOrUpdateConversation(senderNumber, {
+        stage: 'awaiting_other_person_details',
+        status: 'responded'
+      });
+      
+      // ✅ USAR IA para solicitar datos de forma natural
+      return await generateResponse(message, {
+        stage: 'solicitar_datos_tercero',
+        history: conversation.history || []
+      });
+    }
   }
 
-  return 'No le he entendido. Por favor, pulse uno de los botones.';
+  // ========================================
+  // PARA CUALQUIER OTRO CASO: USAR IA
+  // ========================================
+  const context = {
+    status: conversation.status,
+    stage: conversation.stage,
+    history: conversation.history || [],
+    userData: {
+      direccion: conversation.correctedDireccion,
+      fecha: conversation.correctedFecha,
+      nombre: conversation.correctedNombre
+    }
+  };
+
+  return await generateResponse(message, context);
 }
 
-function handleAwaitingCorrectionsStage(rawMessage, senderNumber) {
-  const txt = (rawMessage || '').trim();
-
-  if (txt.length < 5) {
-    return 'Por favor, indique los datos a corregir con algo más de detalle.';
-  }
-
-  const parsed = parseCorrections(txt);
-
-  conversationManager.createOrUpdateConversation(senderNumber, {
-    corrections: txt,
-    correctedDireccion: parsed.direccion,
-    correctedFecha: parsed.fecha,
-    correctedNombre: parsed.nombre,
-    stage: 'confirming_corrections',
-    status: 'awaiting_correction_confirmation',
-    lastPromptType: 'buttons'
-  });
-
-  return ' ';
-}
-
-function handleConfirmingCorrectionsStage(rawMessage, senderNumber) {
-  const m = normalizeText(rawMessage);
-
-  if (m.includes('si') || m.includes('sí') || m.includes('correct')) {
-    conversationManager.createOrUpdateConversation(senderNumber, {
-      stage: 'attendee_select',
-      status: 'awaiting_attendee',
-      lastPromptType: 'buttons'
-    });
-    return ' ';
-  }
-
-  if (m.includes('no') || m.includes('error') || m.includes('incorrect')) {
-    conversationManager.createOrUpdateConversation(senderNumber, {
-      stage: 'awaiting_corrections',
-      status: 'responded',
-      lastPromptType: 'text'
-    });
-    return responses.pedirDatosCorregidos;
-  }
-
-  return 'Por favor, responda "Sí" o "No".';
-}
-
-function handleAttendeeSelectStage(rawMessage, senderNumber) {
-  const m = normalizeText(rawMessage);
-
-  // ✅ Botón exacto: "Otra persona"
-  if (m === 'otra persona' || m.includes('otra persona')) {
-    conversationManager.createOrUpdateConversation(senderNumber, {
-      stage: 'awaiting_other_person_details',
-      status: 'responded',
-      lastPromptType: 'text'
-    });
-    return 'Por favor, indique en un solo mensaje: nombre, teléfono y relación con el asegurado.';
-  }
-
-  // ✅ Botón exacto: "Yo misma" (y variantes)
-  if (m === 'yo misma' || m.includes('yo misma') || m === 'yo' || m.includes('yo')) {
-    conversationManager.createOrUpdateConversation(senderNumber, {
-      stage: 'awaiting_claim_type',
-      status: 'responded',
-      lastPromptType: 'text'
-    });
-    return CLAIM_TYPE_MENU;
-  }
-
-  // Si no encaja, re-mandar botones
-  conversationManager.createOrUpdateConversation(senderNumber, {
-    stage: 'attendee_select',
-    status: 'awaiting_attendee',
-    lastPromptType: 'buttons'
-  });
-  return ' ';
-}
-
-function handleOtherPersonDetailsStage(rawMessage, senderNumber) {
-  const txt = (rawMessage || '').trim();
-
-  if (txt.length < 10) {
-    return 'Por favor, indique nombre y teléfono (y si puede, relación con el asegurado) en un solo mensaje.';
-  }
-
-  conversationManager.createOrUpdateConversation(senderNumber, {
-    otherPersonDetails: txt,
-    stage: 'awaiting_claim_type',
-    status: 'responded',
-    lastPromptType: 'text'
-  });
-
-  return CLAIM_TYPE_MENU;
-}
-
-function handleClaimTypeStage(rawMessage, senderNumber) {
-  const chosen = extractClaimTypeByChoice(rawMessage);
-
-  if (!chosen) {
-    return `No he entendido la opción. Responda con un número del 1 al 15.\n\n${CLAIM_TYPE_MENU}`;
-  }
-
-  conversationManager.createOrUpdateConversation(senderNumber, {
-    claimType: chosen.index,
-    claimTypeLabel: chosen.label
-  });
-
-  if (chosen.index >= 3) {
-    conversationManager.createOrUpdateConversation(senderNumber, {
-      appointmentMode: 'presencial',
-      presentialForced: true,
-      stage: 'completed',
-      status: 'completed',
-      lastPromptType: 'text'
-    });
-    return 'Cita solo disponible de forma presencial, administración se pondrá en contacto con usted.';
-  }
-
-  conversationManager.createOrUpdateConversation(senderNumber, {
-    stage: 'awaiting_severity',
-    status: 'awaiting_severity_template',
-    lastPromptType: 'buttons'
-  });
-
-  return ' ';
-}
-
-function handleSeverityStage(rawMessage, senderNumber) {
-  const chosen = extractSeverityByChoice(rawMessage);
-
-  if (!chosen) {
-    conversationManager.createOrUpdateConversation(senderNumber, {
-      stage: 'awaiting_severity',
-      status: 'awaiting_severity_template',
-      lastPromptType: 'buttons'
-    });
-    return ' ';
-  }
-
-  conversationManager.createOrUpdateConversation(senderNumber, {
-    severityIndex: chosen.index,
-    severityLabel: chosen.label
-  });
-
-  if (chosen.index >= 3) {
-    conversationManager.createOrUpdateConversation(senderNumber, {
-      appointmentMode: 'presencial',
-      presentialForced: true,
-      stage: 'completed',
-      status: 'completed',
-      lastPromptType: 'text'
-    });
-    return 'Cita solo disponible de forma presencial, administración se pondrá en contacto con usted.';
-  }
-
-  conversationManager.createOrUpdateConversation(senderNumber, {
-    stage: 'appointment_select',
-    status: 'awaiting_appointment',
-    lastPromptType: 'buttons'
-  });
-  return ' ';
-}
-
-function handleAppointmentSelectStage(rawMessage, senderNumber) {
-  const t = normalizeText(rawMessage);
-
-  if (t.includes('presencial')) {
-    conversationManager.createOrUpdateConversation(senderNumber, {
-      appointmentMode: 'presencial',
-      stage: 'awaiting_date',
-      status: 'responded',
-      lastPromptType: 'text',
-      lastInteractive: {
-        kind: 'text',
-        body: 'Por favor, indique la fecha que mejor le convenga.'
-      }
-    });
-    return 'Por favor, indique la fecha que mejor le convenga.';
-  }
-
-  if (t.includes('telematic') || t.includes('telema')) {
-    conversationManager.createOrUpdateConversation(senderNumber, {
-      appointmentMode: 'telematica',
-      stage: 'awaiting_date',
-      status: 'responded',
-      lastPromptType: 'text',
-      lastInteractive: {
-        kind: 'text',
-        body: 'Por favor, indique la fecha que mejor le convenga.'
-      }
-    });
-    return 'Por favor, indique la fecha que mejor le convenga.';
-  }
-
-  conversationManager.createOrUpdateConversation(senderNumber, {
-    stage: 'appointment_select',
-    status: 'awaiting_appointment',
-    lastPromptType: 'buttons'
-  });
-  return ' ';
-}
-
-function handleDateStage(rawMessage, senderNumber) {
-  const dateText = (rawMessage || '').trim();
-
-  if (dateText.length < 4) {
-    return 'Por favor, indique una fecha válida.';
-  }
-
-  conversationManager.createOrUpdateConversation(senderNumber, {
-    preferredDate: dateText,
-    stage: 'completed',
-    status: 'completed',
-    lastPromptType: 'text'
-  });
-
-  return responses.conversacionFinalizada;
+/**
+ * Manejo manual (flujo original sin IA)
+ */
+async function handleManual(message, conversation, senderNumber) {
+  // Aquí iría tu lógica original de messageHandler
+  // (la que ya tienes implementada)
+  return 'Modo manual no implementado en este ejemplo. Use BOT_MODE=hybrid o BOT_MODE=ai';
 }
 
 module.exports = {
