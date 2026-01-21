@@ -1,117 +1,170 @@
-require('dotenv').config();
 const twilio = require('twilio');
 
-function getClient() {
-  const accountSid = process.env.TWILIO_ACCOUNT_SID;
-  const authToken = process.env.TWILIO_AUTH_TOKEN;
+const accountSid = process.env.TWILIO_ACCOUNT_SID;
+const authToken = process.env.TWILIO_AUTH_TOKEN;
 
-  if (!accountSid || !authToken) {
-    throw new Error('TWILIO_ACCOUNT_SID o TWILIO_AUTH_TOKEN no configurados en .env');
+// Debe ser algo como: whatsapp:+15558620102
+const fromNumberEnv = process.env.TWILIO_FROM_NUMBER;
+
+if (!accountSid || !authToken) {
+  console.error('❌ Falta TWILIO_ACCOUNT_SID o TWILIO_AUTH_TOKEN en el entorno');
+}
+
+const client = twilio(accountSid, authToken);
+
+/**
+ * Normaliza números para WhatsApp en Twilio.
+ * Acepta:
+ *   - "34681218907"
+ *   - "+34681218907"
+ *   - "whatsapp:34681218907"
+ *   - "whatsapp:+34681218907"
+ * Devuelve siempre:
+ *   - "whatsapp:+34681218907"
+ */
+function normalizeWhatsAppNumber(input) {
+  if (!input) return input;
+
+  let s = String(input).trim();
+
+  // quitar espacios internos
+  s = s.replace(/\s+/g, '');
+
+  // Caso: ya viene con whatsapp:
+  if (s.toLowerCase().startsWith('whatsapp:')) {
+    let rest = s.slice('whatsapp:'.length);
+
+    // por si venía "whatsapp:346..." => añadir +
+    if (!rest.startsWith('+')) rest = `+${rest}`;
+
+    // por seguridad: eliminar dobles "+"
+    rest = rest.replace(/^\++/, '+');
+
+    return `whatsapp:${rest}`;
   }
-  return twilio(accountSid, authToken);
-}
 
-function assertHX(sid) {
-  if (!sid || typeof sid !== 'string' || !sid.startsWith('HX')) {
-    throw new Error(`ContentSid inválido: "${sid}". Debe empezar con "HX"`);
-  }
-  return sid;
-}
+  // Caso: viene sin whatsapp:
+  if (!s.startsWith('+')) s = `+${s}`;
+  s = s.replace(/^\++/, '+');
 
-function toContentVariablesString(variables) {
-  const v = (variables && typeof variables === 'object') ? variables : {};
-  return JSON.stringify(v);
-}
-
-async function sendTemplateMessage(toNumber, fromNumber, contentSid, variables = null) {
-  const client = getClient();
-
-  const sid = assertHX(contentSid);
-  const contentVars = toContentVariablesString(variables);
-
-  console.log('🧩 Enviando template...');
-  console.log('   ContentSid:', sid);
-  console.log('   To:', toNumber);
-  console.log('   From:', fromNumber);
-  console.log('   ContentVariables:', contentVars);
-
-  const message = await client.messages.create({
-    from: fromNumber,
-    to: toNumber,
-    contentSid: sid,
-    contentVariables: contentVars
-  });
-
-  console.log('✅ Template enviado correctamente. SID:', message.sid);
-  return message;
+  return `whatsapp:${s}`;
 }
 
 /**
- * ✅ FUNCIÓN NUEVA: Enviar mensaje de texto simple (sin template)
+ * Normaliza el FROM (por si en .env alguien pone solo +1555... sin whatsapp:)
  */
-async function sendSimpleMessageWithText(toNumber, fromNumber, body) {
-  const client = getClient();
-
-  console.log('💬 Enviando mensaje de texto simple...');
-  console.log('   To:', toNumber);
-  console.log('   From:', fromNumber);
-  console.log('   Body:', body.substring(0, 50) + '...');
-
-  const message = await client.messages.create({
-    from: fromNumber,
-    to: toNumber,
-    body: body
-  });
-
-  console.log('✅ Mensaje enviado correctamente. SID:', message.sid);
-  return message;
+function normalizeFromNumber() {
+  if (!fromNumberEnv) return fromNumberEnv;
+  return normalizeWhatsAppNumber(fromNumberEnv);
 }
 
-/**
- * ✅ CORREGIDO: Lista Content Templates usando el SDK de Twilio correctamente
- */
-async function listContentTemplates({ pageSize = 50, limit = 200 } = {}) {
-  const client = getClient();
+async function sendTemplateMessage(toNumber, contentSid, contentVariables = {}) {
+  const to = normalizeWhatsAppNumber(toNumber);
+  const from = normalizeFromNumber();
+
+  if (!to || !from) {
+    console.error('❌ sendTemplateMessage: falta to/from', { toNumber, to, fromNumberEnv, from });
+    throw new Error('Missing to/from');
+  }
 
   try {
-    console.log('🔍 Obteniendo templates de Twilio Content API...\n');
-    
-    const contents = await client.content.v1.contents.list({ 
-      pageSize, 
-      limit 
-    });
-    
-    const results = contents.map(c => ({
-      sid: c.sid,
-      friendlyName: c.friendlyName,
-      language: c.language,
-      types: c.types ? Object.keys(c.types) : [],
-      // Agregar estado de aprobación si está disponible
-      approvalRequests: c.approvalRequests || 'N/A'
-    }));
+    console.log('📤 Enviando template:', { to, from, contentSid });
 
-    console.log(`📦 Templates encontrados: ${results.length}\n`);
-    console.log('─'.repeat(80));
-    
-    results.forEach(t => {
-      console.log(`📋 ${t.friendlyName}`);
-      console.log(`   SID: ${t.sid}`);
-      console.log(`   Idioma: ${t.language}`);
-      console.log(`   Tipos: ${t.types.join(', ')}`);
-      console.log('─'.repeat(80));
+    const message = await client.messages.create({
+      to,
+      from,
+      contentSid,
+      contentVariables: JSON.stringify(contentVariables),
     });
 
-    return results;
+    console.log('✅ Template enviado. SID:', message.sid);
+    return message;
   } catch (error) {
-    console.error('\n❌ Error listando templates:', error.message);
-    if (error.code) console.error('   Código Twilio:', error.code);
-    if (error.moreInfo) console.error('   Más info:', error.moreInfo);
+    console.error('❌ Error enviando template:', {
+      to,
+      from,
+      contentSid,
+      code: error.code,
+      message: error.message,
+      moreInfo: error.moreInfo,
+    });
     throw error;
   }
+}
+
+async function sendSimpleMessageWithText(toNumber, text) {
+  const to = normalizeWhatsAppNumber(toNumber);
+  const from = normalizeFromNumber();
+
+  if (!to || !from) {
+    console.error('❌ sendSimpleMessageWithText: falta to/from', { toNumber, to, fromNumberEnv, from });
+    throw new Error('Missing to/from');
+  }
+
+  try {
+    console.log('📤 Enviando texto:', { to, from });
+
+    const message = await client.messages.create({
+      to,
+      from,
+      body: text,
+    });
+
+    console.log('✅ Texto enviado. SID:', message.sid);
+    return message;
+  } catch (error) {
+    console.error('❌ Error enviando texto:', {
+      to,
+      from,
+      code: error.code,
+      message: error.message,
+      moreInfo: error.moreInfo,
+    });
+    throw error;
+  }
+}
+
+/**
+ * Listar Content Templates (si lo usas).
+ */
+async function listContentTemplates(limit = 50) {
+  const results = [];
+  let pageToken = null;
+
+  while (results.length < limit) {
+    const params = { PageSize: 50 };
+    if (pageToken) params.PageToken = pageToken;
+
+    // Content API (dependiendo de cómo lo tengas montado puede variar)
+    // Si esto te funciona, perfecto. Si no, lo ajustamos con tu endpoint real.
+    const resp = await client.content.v1.contents.page(params);
+
+    const contents = resp.instances || [];
+    for (const c of contents) {
+      results.push({
+        sid: c.sid,
+        friendlyName: c.friendly_name,
+        language: c.language,
+        types: c.types ? Object.keys(c.types) : []
+      });
+      if (results.length >= limit) break;
+    }
+
+    pageToken = resp.nextPageToken;
+    if (!pageToken) break;
+  }
+
+  console.log(`\n📦 Templates encontrados: ${results.length}\n`);
+  results.forEach(t => {
+    console.log(`- ${t.friendlyName} | ${t.sid} | ${t.language} | ${t.types.join(', ')}`);
+  });
+
+  return results;
 }
 
 module.exports = {
   sendTemplateMessage,
   sendSimpleMessageWithText,
-  listContentTemplates
+  listContentTemplates,
+  normalizeWhatsAppNumber, // útil para depurar si quieres
 };

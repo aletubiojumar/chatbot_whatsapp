@@ -1,57 +1,37 @@
+// templateSender.js
+require('dotenv').config();
 const { sendTemplateMessage } = require('./sendMessage');
 
 const FROM_NUMBER = process.env.TWILIO_FROM_NUMBER;
 
-function assertEnv(name) {
-  const v = process.env[name];
-  if (!v) throw new Error(`Falta la variable de entorno ${name} en .env`);
-  return v;
+const TEMPLATE_1_SID = process.env.TEMPLATE_1_SID; // “Es usted el asegurado…”
+const TEMPLATE_2_SID = process.env.TEMPLATE_2_SID; // “¿Podemos continuar…?”
+const TEMPLATE_3_SID = process.env.TEMPLATE_3_SID; // “Opciones: Sí/No”
+const TEMPLATE_4_SID = process.env.TEMPLATE_4_SID; // “Continuar / Número equivocado”
+
+async function sendInitialTemplate(phoneNumber) {
+  if (!TEMPLATE_1_SID) throw new Error('Falta TEMPLATE_1_SID en .env');
+  return sendTemplateMessage(phoneNumber, FROM_NUMBER, TEMPLATE_1_SID);
 }
 
-async function sendInitialTemplate(toNumber, variables = null) {
-  const sid = assertEnv('CONTENT_SID');
-  return sendTemplateMessage(toNumber, FROM_NUMBER, sid, variables);
+async function sendWelcomeTemplate(phoneNumber) {
+  if (!TEMPLATE_2_SID) throw new Error('Falta TEMPLATE_2_SID en .env');
+  return sendTemplateMessage(phoneNumber, FROM_NUMBER, TEMPLATE_2_SID);
 }
 
-async function sendAttendeeTemplate(toNumber, variables = null) {
-  const sid = assertEnv('MENSAJE4_V2_SID');
-  return sendTemplateMessage(toNumber, FROM_NUMBER, sid, variables);
+async function sendCorrectionTemplate(phoneNumber) {
+  if (!TEMPLATE_3_SID) throw new Error('Falta TEMPLATE_3_SID en .env');
+  return sendTemplateMessage(phoneNumber, FROM_NUMBER, TEMPLATE_3_SID);
 }
 
-async function sendCorrectionTemplate(toNumber, variables) {
-  const sid = assertEnv('MENSAJE_CORREGIR_V5_SID');
-  return sendTemplateMessage(toNumber, FROM_NUMBER, sid, variables);
-}
-
-// ✅ Confirmación inicial de datos (mensaje_corregir_v5)
-async function sendInitialConfirmV5Template(toNumber, variables = null) {
-  const sid = assertEnv('MENSAJE_CORREGIR_V5_SID');
-  return sendTemplateMessage(toNumber, FROM_NUMBER, sid, variables);
-}
-
-async function sendAppointmentTemplate(toNumber, variables = null) {
-  const sid = assertEnv('MENSAJE_CITA_SID');
-  return sendTemplateMessage(toNumber, FROM_NUMBER, sid, variables);
-}
-
-async function sendContinuationTemplate(toNumber, variables = null) {
-  const sid = assertEnv('MENSAJE_AUSENCIA_SID');
-  return sendTemplateMessage(toNumber, FROM_NUMBER, sid, variables);
-}
-
-// ✅ Gravedad
-async function sendSeverityTemplate(toNumber) {
-  const sid = assertEnv('MENSAJE_GRAVEDAD_SID');
-  console.log('🧩 MENSAJE_GRAVEDAD_SID =', sid);
-  return sendTemplateMessage(toNumber, FROM_NUMBER, sid);
+async function sendInitialConfirmTemplate(phoneNumber) {
+  if (!TEMPLATE_4_SID) throw new Error('Falta TEMPLATE_4_SID en .env');
+  return sendTemplateMessage(phoneNumber, FROM_NUMBER, TEMPLATE_4_SID);
 }
 
 module.exports = {
   sendInitialTemplate,
-  sendAttendeeTemplate,
+  sendWelcomeTemplate,
   sendCorrectionTemplate,
-  sendInitialConfirmV5Template,
-  sendAppointmentTemplate,
-  sendContinuationTemplate,
-  sendSeverityTemplate
+  sendInitialConfirmTemplate
 };
