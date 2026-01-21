@@ -1,37 +1,42 @@
-// templateSender.js
-require('dotenv').config();
+// src/bot/templateSender.js
 const { sendTemplateMessage } = require('./sendMessage');
+const { normalizeWhatsAppNumber } = require('./utils/phone');
 
-const FROM_NUMBER = process.env.TWILIO_FROM_NUMBER;
+// Ajusta estos env a lo que uses realmente
+const CONTINUATION_TEMPLATE_SID = process.env.TWILIO_CONTINUATION_TEMPLATE_SID;
+const INITIAL_TEMPLATE_SID = process.env.TWILIO_INITIAL_TEMPLATE_SID;
 
-const TEMPLATE_1_SID = process.env.TEMPLATE_1_SID; // “Es usted el asegurado…”
-const TEMPLATE_2_SID = process.env.TEMPLATE_2_SID; // “¿Podemos continuar…?”
-const TEMPLATE_3_SID = process.env.TEMPLATE_3_SID; // “Opciones: Sí/No”
-const TEMPLATE_4_SID = process.env.TEMPLATE_4_SID; // “Continuar / Número equivocado”
+async function sendContinuationTemplate(toNumber, variables = {}) {
+  if (!CONTINUATION_TEMPLATE_SID) {
+    throw new Error('Falta TWILIO_CONTINUATION_TEMPLATE_SID en .env');
+  }
 
-async function sendInitialTemplate(phoneNumber) {
-  if (!TEMPLATE_1_SID) throw new Error('Falta TEMPLATE_1_SID en .env');
-  return sendTemplateMessage(phoneNumber, FROM_NUMBER, TEMPLATE_1_SID);
+  const to = normalizeWhatsAppNumber(toNumber);
+
+  console.log('🧩 Enviando template...');
+  console.log('   ContentSid:', CONTINUATION_TEMPLATE_SID);
+  console.log('   To:', to);
+  console.log('   ContentVariables:', variables);
+
+  return sendTemplateMessage(to, CONTINUATION_TEMPLATE_SID, variables);
 }
 
-async function sendWelcomeTemplate(phoneNumber) {
-  if (!TEMPLATE_2_SID) throw new Error('Falta TEMPLATE_2_SID en .env');
-  return sendTemplateMessage(phoneNumber, FROM_NUMBER, TEMPLATE_2_SID);
-}
+async function sendInitialTemplate(toNumber, variables = {}) {
+  if (!INITIAL_TEMPLATE_SID) {
+    throw new Error('Falta TWILIO_INITIAL_TEMPLATE_SID en .env');
+  }
 
-async function sendCorrectionTemplate(phoneNumber) {
-  if (!TEMPLATE_3_SID) throw new Error('Falta TEMPLATE_3_SID en .env');
-  return sendTemplateMessage(phoneNumber, FROM_NUMBER, TEMPLATE_3_SID);
-}
+  const to = normalizeWhatsAppNumber(toNumber);
 
-async function sendInitialConfirmTemplate(phoneNumber) {
-  if (!TEMPLATE_4_SID) throw new Error('Falta TEMPLATE_4_SID en .env');
-  return sendTemplateMessage(phoneNumber, FROM_NUMBER, TEMPLATE_4_SID);
+  console.log('🧩 Enviando template inicial...');
+  console.log('   ContentSid:', INITIAL_TEMPLATE_SID);
+  console.log('   To:', to);
+  console.log('   ContentVariables:', variables);
+
+  return sendTemplateMessage(to, INITIAL_TEMPLATE_SID, variables);
 }
 
 module.exports = {
+  sendContinuationTemplate,
   sendInitialTemplate,
-  sendWelcomeTemplate,
-  sendCorrectionTemplate,
-  sendInitialConfirmTemplate
 };
