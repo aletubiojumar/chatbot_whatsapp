@@ -3,7 +3,6 @@ const conversationManager = require('./bot/conversationManager');
 require('dotenv').config();
 
 // 📌 CONFIGURACIÓN
-const FROM_NUMBER = process.env.TWILIO_FROM_NUMBER;
 const TO_NUMBER = process.argv[2];
 const CONTENT_SID = process.env.CONTENT_SID; // mensaje1_v2 de Twilio
 
@@ -21,21 +20,16 @@ if (!CONTENT_SID) {
   process.exit(1);
 }
 
-if (!FROM_NUMBER) {
-  console.error('❌ Error: TWILIO_FROM_NUMBER no está configurado en .env');
-  process.exit(1);
-}
-
 // 📤 FUNCIÓN PRINCIPAL
 async function send() {
   console.log('📤 Enviando mensaje inicial con botones...');
   console.log('   To:', TO_NUMBER);
-  console.log('   From:', FROM_NUMBER);
   console.log('   ContentSid:', CONTENT_SID);
   console.log('');
 
-  // Enviar template (sin variables porque mensaje1_v2 no las necesita)
-  await sendTemplateMessage(TO_NUMBER, FROM_NUMBER, CONTENT_SID, null);
+  // ✅ CORREGIDO: sendTemplateMessage(toNumber, contentSid, contentVariables)
+  // Ya NO pasamos FROM_NUMBER porque la función lo obtiene internamente
+  await sendTemplateMessage(TO_NUMBER, CONTENT_SID, {});
 
   // ✅ Crear/actualizar conversación en el sistema CON lastInteractive
   conversationManager.createOrUpdateConversation(TO_NUMBER, {
@@ -44,10 +38,11 @@ async function send() {
     attempts: 0,
     lastPromptType: 'buttons',
     lastMessageAt: Date.now(),
+    lastUserMessageAt: Date.now(), // ✅ Importante para que no se marque como inactiva inmediatamente
     lastInteractive: {
       kind: 'template',
       sid: CONTENT_SID,
-      variables: null
+      variables: {}
     }
   });
 
