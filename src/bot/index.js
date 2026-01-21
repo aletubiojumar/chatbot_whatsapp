@@ -10,7 +10,8 @@ const { handleContinuationResponse, startInactivityScheduler } = require('./inac
 const { startReminderScheduler } = require('./reminderScheduler');
 const { isWithinSendWindow } = require('./timeWindow');
 
-const { normalizeWhatsAppNumber } = require('./sendMessage');
+// ✅ CORREGIDO: importar desde utils/phone en lugar de sendMessage
+const { normalizeWhatsAppNumber } = require('./utils/phone');
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
