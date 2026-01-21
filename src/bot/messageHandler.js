@@ -1,6 +1,6 @@
 // src/bot/messageHandler.js
 const conversationManager = require('./conversationManager');
-const { generateResponse, analyzeMessage, validateUserInput } = require('../ai/aiModel');
+const { generateResponse, analyzeMessage, validateUserInput } = require('../ai/aiModel'); // Funciones IA
 const { normalizeWhatsAppNumber } = require('./utils/phone');
 
 /**
