@@ -14,11 +14,11 @@ const client = twilio(accountSid, authToken);
 
 function getFromWhatsApp() {
   // Debe ser algo tipo: whatsapp:+15558620102
-  const from = process.env.TWILIO_WHATSAPP_NUMBER;
+  const from = process.env.TWILIO_FROM_NUMBER;
   const normalized = normalizeWhatsAppNumber(from);
   if (!normalized || !isValidTwilioWhatsAppTo(normalized)) {
     throw new Error(
-      `TWILIO_WHATSAPP_NUMBER inválido. Debe ser tipo "whatsapp:+15558620102". Valor actual: ${from}`
+      `TWILIO_FROM_NUMBER inválido. Debe ser tipo "whatsapp:+15558620102". Valor actual: ${from}`
     );
   }
   return normalized;
