@@ -39,8 +39,14 @@ async function sendSimpleMessageWithText(toNumber, body) {
   });
 }
 
-async function sendTemplateMessage(to, contentSid, contentVariables = {}) {
-  const from = process.env.TWILIO_FROM_NUMBER;
+async function sendTemplateMessage(toNumber, contentSid, contentVariables = {}) {
+  const to = normalizeWhatsAppNumber(toNumber);
+  const from = getFromWhatsApp();
+
+  if (!isValidTwilioWhatsAppTo(to)) {
+    throw new Error(`Número 'To' inválido: ${toNumber} => ${to}`);
+  }
+
   const contentLanguage = process.env.CONTENT_LANGUAGE || 'es';
 
   return client.messages.create({
@@ -51,6 +57,7 @@ async function sendTemplateMessage(to, contentSid, contentVariables = {}) {
     contentVariables: JSON.stringify(contentVariables),
   });
 }
+
 
 module.exports = {
   sendSimpleMessageWithText,
