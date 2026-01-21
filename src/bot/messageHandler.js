@@ -1,6 +1,7 @@
 // messageHandler.js
 const responses = require('./responses');
 const conversationManager = require('./conversationManager');
+const { normalizeWhatsAppNumber } = require('./utils/phone');
 
 function parseCorrections(text) {
   const raw = (text || '').trim();
@@ -234,6 +235,8 @@ function isForcedPresentialSeverity(label) {
    MAIN
 ======================= */
 function processMessage(incomingMessage, senderNumber) {
+  senderNumber = normalizeWhatsAppNumber(senderNumber) || senderNumber;
+
   let conversation = conversationManager.getConversation(senderNumber);
   if (!conversation) {
     conversation = conversationManager.createOrUpdateConversation(senderNumber, {
@@ -245,19 +248,6 @@ function processMessage(incomingMessage, senderNumber) {
 
   if (conversation.status === 'snoozed') {
     conversation = conversationManager.clearSnoozed(senderNumber);
-  }
-
-  // ✅ MANEJAR CONTINUACIÓN
-  if (conversation.status === 'awaiting_continuation') {
-    const { handleContinuationResponse } = require('./inactivityHandler');
-    const continuationResponse = handleContinuationResponse(incomingMessage, senderNumber);
-    if (continuationResponse) {
-      conversationManager.recordResponse(senderNumber, incomingMessage, 'user');
-      if (continuationResponse.trim()) {
-        conversationManager.recordResponse(senderNumber, continuationResponse, 'bot');
-      }
-      return continuationResponse;
-    }
   }
 
   // admin offer flow

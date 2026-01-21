@@ -107,8 +107,16 @@ function recordResponse(phoneNumber) {
   });
 }
 
+function getConversation(phoneNumber) {
+  const key = normalizeWhatsAppNumber(phoneNumber) || phoneNumber;
+  const conversations = getConversations();
+  return conversations[key] || null;
+}
+
+
 module.exports = {
   getConversations,
+  getConversation,
   saveConversations,
   createOrUpdateConversation,
   recordUserMessage,
