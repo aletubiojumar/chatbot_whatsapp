@@ -10,7 +10,8 @@ const genAI = new GoogleGenerativeAI(apiKey);
 
 // Configuración del modelo
 const model = genAI.getGenerativeModel({
-    model: process.env.GEMINI_MODEL || 'gemini-3-flash'
+    model: process.env.GEMINI_MODEL || 'gemini-3-flash-preview',
+    mode: process.env.GEMINI_MODE || 'ai',
 });
 
 // System prompt que define el comportamiento del bot
