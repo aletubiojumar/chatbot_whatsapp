@@ -4,11 +4,7 @@ require('dotenv').config();
 
 // 📌 CONFIGURACIÓN
 const TO_NUMBER = process.argv[2];
-const CONTENT_SID = process.env.CONTENT_SID; // mensaje1_v2 de Twilio
-
-const msg = await sendTemplateMessage(TO_NUMBER, CONTENT_SID, {});
-console.log('✅ Twilio Message SID:', msg.sid);
-console.log('✅ Twilio Message Status:', msg.status);
+const CONTENT_SID = process.env.CONTENT_SID;
 
 // ✅ VALIDACIONES
 if (!TO_NUMBER) {
@@ -19,8 +15,6 @@ if (!TO_NUMBER) {
 
 if (!CONTENT_SID) {
   console.error('❌ Error: CONTENT_SID no está configurado en .env');
-  console.error('Agrega esta línea a tu .env:');
-  console.error('CONTENT_SID=HXb324a1ef0402c9cc7c0368bdb3e007f3');
   process.exit(1);
 }
 
@@ -31,23 +25,18 @@ async function send() {
   console.log('   ContentSid:', CONTENT_SID);
   console.log('');
 
-  // ✅ CORREGIDO: sendTemplateMessage(toNumber, contentSid, contentVariables)
-  // Ya NO pasamos FROM_NUMBER porque la función lo obtiene internamente
-  await sendTemplateMessage(TO_NUMBER, CONTENT_SID, {});
+  const msg = await sendTemplateMessage(TO_NUMBER, CONTENT_SID, {}); // <- así lo espera la función :contentReference[oaicite:1]{index=1}
+  console.log('✅ Twilio SID:', msg.sid);
+  console.log('✅ Twilio Status:', msg.status);
 
-  // ✅ Crear/actualizar conversación en el sistema CON lastInteractive
   conversationManager.createOrUpdateConversation(TO_NUMBER, {
     status: 'pending',
     stage: 'initial',
     attempts: 0,
     lastPromptType: 'buttons',
     lastMessageAt: Date.now(),
-    lastUserMessageAt: Date.now(), // ✅ Importante para que no se marque como inactiva inmediatamente
-    lastInteractive: {
-      kind: 'template',
-      sid: CONTENT_SID,
-      variables: {}
-    }
+    lastUserMessageAt: Date.now(),
+    lastInteractive: { kind: 'template', sid: CONTENT_SID, variables: {} },
   });
 
   console.log('');
@@ -62,11 +51,7 @@ send()
   })
   .catch((error) => {
     console.error('❌ Error:', error.message);
-    if (error.code) {
-      console.error('   Código Twilio:', error.code);
-    }
-    if (error.moreInfo) {
-      console.error('   Más info:', error.moreInfo);
-    }
+    if (error.code) console.error('   Código Twilio:', error.code);
+    if (error.moreInfo) console.error('   Más info:', error.moreInfo);
     process.exit(1);
   });
