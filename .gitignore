@@ -5,6 +5,7 @@ node_modules/
 .env
 .env.local
 .env.*.local
+.venv
 
 # Archivos de datos
 data/

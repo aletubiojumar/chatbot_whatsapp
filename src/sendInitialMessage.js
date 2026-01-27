@@ -6,6 +6,10 @@ require('dotenv').config();
 const TO_NUMBER = process.argv[2];
 const CONTENT_SID = process.env.CONTENT_SID; // mensaje1_v2 de Twilio
 
+const msg = await sendTemplateMessage(TO_NUMBER, CONTENT_SID, {});
+console.log('✅ Twilio Message SID:', msg.sid);
+console.log('✅ Twilio Message Status:', msg.status);
+
 // ✅ VALIDACIONES
 if (!TO_NUMBER) {
   console.error('❌ Error: Debes proporcionar un número de teléfono');
