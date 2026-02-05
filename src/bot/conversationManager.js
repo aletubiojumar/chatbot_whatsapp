@@ -4,8 +4,14 @@ const path = require('path');
 const { normalizeWhatsAppNumber } = require('./utils/phone');
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', '..', 'data');
-const CONVERSATIONS_FILE =
-  process.env.CONVERSATIONS_FILE || path.join(DATA_DIR, 'conversations.json');
+const CONVERSATIONS_FILE = process.env.CONVERSATIONS_FILE || path.join(DATA_DIR, 'conversations.json');
+
+// ⭐ Configuración desde .env
+const REMINDER_INTERVAL_HOURS = Number(process.env.REMINDER_INTERVAL_HOURS || 6);
+const MAX_REMINDER_ATTEMPTS = Number(process.env.MAX_REMINDER_ATTEMPTS || 3);
+
+// Convertir horas a milisegundos
+const REMINDER_INTERVAL_MS = REMINDER_INTERVAL_HOURS * 60 * 60 * 1000;
 
 function ensureStorage() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -113,13 +119,15 @@ function getConversation(phoneNumber) {
   return conversations[key] || null;
 }
 
-// ✅ MÉTODO AÑADIDO: getAllConversations
 function getAllConversations() {
   const conversations = getConversations();
   return Object.values(conversations);
 }
 
-// ✅ Métodos adicionales para reminderScheduler
+/**
+ * Obtiene conversaciones que necesitan recordatorio
+ * Usa configuración de MAX_REMINDER_ATTEMPTS desde .env
+ */
 function getConversationsNeedingReminder() {
   const conversations = getAllConversations();
   const now = Date.now();
@@ -127,21 +135,29 @@ function getConversationsNeedingReminder() {
   return conversations.filter(conv => {
     if (conv.status !== 'pending') return false;
     if (!conv.nextReminderAt) return false;
-    if (conv.attempts >= 3) return false;
+    if (conv.attempts >= MAX_REMINDER_ATTEMPTS) return false;
     return conv.nextReminderAt <= now;
   });
 }
 
+/**
+ * Obtiene conversaciones que necesitan escalación
+ * Usa configuración de MAX_REMINDER_ATTEMPTS desde .env
+ */
 function getConversationsNeedingEscalation() {
   const conversations = getAllConversations();
   
   return conversations.filter(conv => {
-    return conv.attempts >= 3 && 
+    return conv.attempts >= MAX_REMINDER_ATTEMPTS && 
            conv.status === 'pending' && 
            !conv.escalatedAt;
   });
 }
 
+/**
+ * Incrementa intentos y programa siguiente recordatorio
+ * Usa configuración de REMINDER_INTERVAL_HOURS desde .env
+ */
 function incrementAttempts(phoneNumber) {
   const key = normalizeWhatsAppNumber(phoneNumber) || phoneNumber;
   const conv = getConversation(key);
@@ -149,7 +165,10 @@ function incrementAttempts(phoneNumber) {
   if (!conv) return null;
   
   const newAttempts = (conv.attempts || 0) + 1;
-  const nextReminder = Date.now() + (6 * 60 * 60 * 1000); // 6 horas
+  const nextReminder = Date.now() + REMINDER_INTERVAL_MS;
+  
+  console.log(`📊 Incrementando intentos: ${newAttempts}/${MAX_REMINDER_ATTEMPTS}`);
+  console.log(`⏰ Próximo recordatorio en ${REMINDER_INTERVAL_HOURS} horas`);
   
   return createOrUpdateConversation(key, {
     attempts: newAttempts,
@@ -175,7 +194,10 @@ function clearSnoozed(phoneNumber) {
   });
 }
 
-// ✅ MÉTODO AÑADIDO: getInactiveConversations (para inactivityHandler)
+/**
+ * Obtiene conversaciones inactivas
+ * @param {number} inactivityTimeoutMs - Tiempo de inactividad en milisegundos
+ */
 function getInactiveConversations(inactivityTimeoutMs) {
   const conversations = getAllConversations();
   const now = Date.now();
@@ -196,7 +218,6 @@ function getInactiveConversations(inactivityTimeoutMs) {
   });
 }
 
-// ✅ MÉTODO AÑADIDO: snoozeConversation (para inactivityHandler)
 function snoozeConversation(phoneNumber, snoozeMs) {
   const key = normalizeWhatsAppNumber(phoneNumber) || phoneNumber;
   const snoozedUntil = Date.now() + snoozeMs;
@@ -207,6 +228,17 @@ function snoozeConversation(phoneNumber, snoozeMs) {
   });
 }
 
+/**
+ * Obtiene estadísticas de configuración actual
+ */
+function getConfigStats() {
+  return {
+    reminderIntervalHours: REMINDER_INTERVAL_HOURS,
+    maxReminderAttempts: MAX_REMINDER_ATTEMPTS,
+    reminderIntervalMs: REMINDER_INTERVAL_MS,
+    conversationsFile: CONVERSATIONS_FILE
+  };
+}
 
 module.exports = {
   getConversations,
@@ -223,5 +255,8 @@ module.exports = {
   createOrUpdateConversation,
   recordUserMessage,
   recordResponse,
+  getConfigStats,
   CONVERSATIONS_FILE,
+  REMINDER_INTERVAL_MS,
+  MAX_REMINDER_ATTEMPTS,
 };

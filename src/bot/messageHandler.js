@@ -1,18 +1,21 @@
-// src/bot/messageHandler.js
+// src/bot/messageHandler.js (VERSIÓN MEJORADA)
 const conversationManager = require('./conversationManager');
-const { generateResponse, analyzeMessage, validateUserInput } = require('../ai/aiModel'); // Funciones IA
+const { 
+  generateResponse, 
+  analyzeMessage, 
+  validateUserInput,
+  determineNextStage,
+  CONVERSATION_FLOW 
+} = require('../ai/aiModel');
 const { normalizeWhatsAppNumber } = require('./utils/phone');
 
 /**
  * Modo de operación del bot
- * - 'ai': Usa Gemini para todas las respuestas
- * - 'hybrid': Usa IA + lógica estructurada (futuro)
- * - 'manual': Sin IA (deshabilitado)
  */
 const BOT_MODE = process.env.BOT_MODE || 'ai';
 
 /**
- * Procesa mensajes del usuario
+ * Procesa mensajes del usuario con IA mejorada
  */
 async function processMessage(incomingMessage, senderNumber) {
   senderNumber = normalizeWhatsAppNumber(senderNumber) || senderNumber;
@@ -24,48 +27,82 @@ async function processMessage(incomingMessage, senderNumber) {
       status: 'pending',
       attempts: 0,
       history: [],
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      userData: {}
     });
   }
 
   // Registrar mensaje del usuario
   conversationManager.recordUserMessage(senderNumber);
 
-  console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('💬 Mensaje recibido:', incomingMessage);
+  console.log('\n┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('📬 Mensaje recibido:', incomingMessage);
   console.log('📊 Estado actual:', conversation.stage, '/', conversation.status);
   console.log('🤖 Modo operación:', BOT_MODE);
   console.log('👤 Usuario:', senderNumber);
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+  console.log('🕐 Timestamp:', new Date().toISOString());
+  console.log('┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
   try {
-    let response;
+    // PASO 1: Analizar el mensaje con IA
+    console.log('🔍 PASO 1: Analizando mensaje...');
+    const analysis = await analyzeMessage(incomingMessage);
+    console.log('   Intent:', analysis.intent);
+    console.log('   Sentiment:', analysis.sentiment);
+    console.log('   Needs Human:', analysis.needsHumanSupport);
+    console.log('   Confidence:', analysis.confidence);
 
-    if (BOT_MODE === 'ai') {
-      // ✅ MODO IA: Todo gestionado por Gemini
-      response = await handleWithAI(incomingMessage, conversation, senderNumber);
-    } else if (BOT_MODE === 'hybrid') {
-      // ✅ MODO HÍBRIDO: Combina IA con lógica estructurada
-      response = await handleHybrid(incomingMessage, conversation, senderNumber);
-    } else {
-      // Si BOT_MODE es 'manual' o cualquier otro, usar IA por defecto
-      console.log('⚠️  BOT_MODE no reconocido, usando IA');
-      response = await handleWithAI(incomingMessage, conversation, senderNumber);
+    // PASO 2: Verificar si necesita escalación
+    if (shouldEscalate(analysis, conversation)) {
+      return handleEscalation(analysis, conversation, senderNumber);
     }
 
-    // Actualizar historial de conversación
-    const history = conversation.history || [];
-    history.push(
-      { role: 'user', content: incomingMessage, timestamp: Date.now() },
-      { role: 'assistant', content: response, timestamp: Date.now() }
-    );
+    // PASO 3: Extraer y validar datos si corresponde
+    console.log('\n🔍 PASO 2: Extrayendo datos...');
+    const extractedData = await extractRelevantData(incomingMessage, conversation, analysis);
     
-    conversationManager.createOrUpdateConversation(senderNumber, {
-      history: history.slice(-20), // Mantener últimos 20 mensajes
-      lastResponseAt: Date.now()
-    });
+    if (Object.keys(extractedData).length > 0) {
+      console.log('   Datos extraídos:', extractedData);
+      conversation.userData = { ...conversation.userData, ...extractedData };
+    }
 
-    console.log('✅ Respuesta enviada:', response.substring(0, 80) + (response.length > 80 ? '...' : ''));
+    // PASO 4: Determinar si avanzar de etapa
+    console.log('\n➡️  PASO 3: Evaluando transición de stage...');
+    const shouldProgress = evaluateStageProgression(analysis, conversation);
+    
+    let newStage = conversation.stage;
+    if (shouldProgress) {
+      newStage = determineNextStage(conversation.stage, analysis.intent, conversation.userData);
+      console.log(`   ✅ Transición aprobada: ${conversation.stage} → ${newStage}`);
+    } else {
+      console.log(`   ⏸️  Permanece en: ${conversation.stage}`);
+    }
+
+    // PASO 5: Generar respuesta con IA
+    console.log('\n🤖 PASO 4: Generando respuesta con Gemini...');
+    const context = buildContext(conversation, analysis, extractedData);
+    const response = await generateResponse(incomingMessage, context);
+
+    // PASO 6: Actualizar estado de la conversación
+    console.log('\n💾 PASO 5: Actualizando estado...');
+    updateConversationState(
+      senderNumber,
+      {
+        stage: newStage,
+        status: 'responded',
+        userData: conversation.userData,
+        lastIntent: analysis.intent,
+        lastSentiment: analysis.sentiment,
+        lastConfidence: analysis.confidence,
+        attempts: shouldProgress ? 0 : (conversation.attempts || 0) + 1
+      },
+      incomingMessage,
+      response
+    );
+
+    console.log('✅ Procesamiento completado');
+    console.log('   New stage:', newStage);
+    console.log('   Response length:', response.length);
     console.log('');
 
     return response;
@@ -74,108 +111,25 @@ async function processMessage(incomingMessage, senderNumber) {
     console.error('❌ Error procesando mensaje:', error);
     console.error('Stack:', error.stack);
     
-    // Respuesta de error amigable
-    return 'Disculpe, estoy teniendo problemas técnicos en este momento. Por favor, intente de nuevo en unos momentos o contacte directamente con administración.';
+    return handleError(error, conversation, senderNumber);
   }
 }
 
 /**
- * Manejo con IA pura
+ * Construye el contexto completo para la IA
  */
-async function handleWithAI(message, conversation, senderNumber) {
-  console.log('🧠 Procesando con IA pura...');
-
-  // Analizar el mensaje primero
-  const analysis = await analyzeMessage(message);
-  console.log('🔍 Análisis IA:', JSON.stringify(analysis, null, 2));
-
-  // Verificar si necesita escalación inmediata
-  if (shouldEscalate(analysis, conversation)) {
-    return handleEscalation(analysis, conversation, senderNumber);
-  }
-
-  // Construir contexto detallado para la IA
-  const context = buildContext(conversation, analysis);
-
-  // Generar respuesta con IA
-  console.log('🤖 Consultando Gemini AI...');
-  const response = await generateResponse(message, context);
+function buildContext(conversation, analysis, extractedData) {
+  const stageConfig = CONVERSATION_FLOW[conversation.stage];
   
-  console.log('✅ Respuesta IA generada');
-  console.log('   Longitud:', response.length, 'caracteres');
-
-  // Actualizar estado basado en la intención
-  updateConversationState(analysis, conversation, senderNumber);
-
-  return response;
-}
-
-/**
- * Manejo híbrido: IA + lógica estructurada
- */
-async function handleHybrid(message, conversation, senderNumber) {
-  console.log('🔀 Procesando en modo híbrido...');
-
-  const normalizedMsg = message.toLowerCase().trim();
-  
-  // Detectar comandos específicos que no necesitan IA
-  if (isSimpleCommand(normalizedMsg)) {
-    return handleSimpleCommand(normalizedMsg, conversation, senderNumber);
-  }
-
-  // Para todo lo demás, usar IA
-  return handleWithAI(message, conversation, senderNumber);
-}
-
-/**
- * Verifica si es un comando simple
- */
-function isSimpleCommand(msg) {
-  const simpleCommands = [
-    'ayuda', 'help', 'menu', 'opciones',
-    'cancelar', 'salir', 'terminar'
-  ];
-  
-  return simpleCommands.some(cmd => msg.includes(cmd));
-}
-
-/**
- * Maneja comandos simples sin IA
- */
-function handleSimpleCommand(msg, conversation, senderNumber) {
-  if (msg.includes('ayuda') || msg.includes('help')) {
-    return 'Estoy aquí para ayudarle con su siniestro de hogar. ¿En qué puedo asistirle?';
-  }
-  
-  if (msg.includes('cancelar') || msg.includes('salir')) {
-    conversationManager.createOrUpdateConversation(senderNumber, {
-      status: 'cancelled',
-      stage: 'cancelled',
-      cancelledAt: Date.now()
-    });
-    return 'Entendido. Si necesita ayuda más adelante, no dude en contactarnos. Un saludo.';
-  }
-  
-  return null; // Usar IA si no coincide
-}
-
-/**
- * Construye el contexto para la IA
- */
-function buildContext(conversation, analysis) {
   return {
+    phoneNumber: conversation.phoneNumber,
     status: conversation.status,
     stage: conversation.stage,
+    stageName: stageConfig?.name || conversation.stage,
     history: conversation.history || [],
     userData: {
-      direccion: conversation.correctedDireccion || conversation.direccion,
-      fecha: conversation.correctedFecha || conversation.fecha,
-      nombre: conversation.correctedNombre || conversation.nombre,
-      claimType: conversation.claimTypeLabel,
-      severity: conversation.severityLabel,
-      appointmentMode: conversation.appointmentMode,
-      preferredDate: conversation.preferredDate,
-      otherPersonDetails: conversation.otherPersonDetails
+      ...conversation.userData,
+      ...extractedData
     },
     metadata: {
       attempts: conversation.attempts || 0,
@@ -183,10 +137,186 @@ function buildContext(conversation, analysis) {
       frustrationDetected: conversation.frustrationDetected || false,
       needsAssistance: conversation.needsAssistance || false,
       createdAt: conversation.createdAt,
-      lastMessageAt: conversation.lastMessageAt
+      lastMessageAt: conversation.lastMessageAt,
+      lastIntent: conversation.lastIntent,
+      lastSentiment: conversation.lastSentiment
     },
     analysis: analysis
   };
+}
+
+/**
+ * Extrae datos relevantes según la etapa actual
+ */
+async function extractRelevantData(message, conversation, analysis) {
+  const stage = conversation.stage;
+  const extracted = {};
+
+  // Ya vienen algunos datos del análisis de IA
+  if (analysis.extractedData) {
+    Object.assign(extracted, analysis.extractedData);
+  }
+
+  // Extracciones específicas por etapa
+  try {
+    switch (stage) {
+      case 'awaiting_corrections':
+        // Validar y extraer correcciones
+        if (message.toLowerCase().includes('direccion') || message.toLowerCase().includes('dirección')) {
+          const validation = await validateUserInput(message, 'direccion');
+          if (validation.isValid) {
+            extracted.correctedDireccion = validation.extractedData;
+          }
+        }
+        if (message.toLowerCase().includes('fecha')) {
+          const validation = await validateUserInput(message, 'fecha');
+          if (validation.isValid) {
+            extracted.correctedFecha = validation.extractedData;
+          }
+        }
+        if (message.toLowerCase().includes('nombre')) {
+          const validation = await validateUserInput(message, 'nombre');
+          if (validation.isValid) {
+            extracted.correctedNombre = validation.extractedData;
+          }
+        }
+        break;
+
+      case 'attendee_select':
+        const normalized = message.toLowerCase().trim();
+        if (normalized.includes('yo') || normalized.includes('mi') || normalized.includes('estaré')) {
+          extracted.attendee = 'self';
+          extracted.attendeeLabel = 'El asegurado/a';
+        } else if (normalized.includes('otra persona') || normalized.includes('alguien')) {
+          extracted.attendee = 'other';
+          extracted.attendeeLabel = 'Otra persona';
+        }
+        break;
+
+      case 'other_person_details':
+        // Extraer nombre y teléfono
+        const nameValidation = await validateUserInput(message, 'nombre');
+        const phoneValidation = await validateUserInput(message, 'telefono');
+        
+        if (nameValidation.isValid) {
+          extracted.otherPersonName = nameValidation.extractedData;
+        }
+        if (phoneValidation.isValid) {
+          extracted.otherPersonPhone = phoneValidation.extractedData;
+        }
+        
+        if (extracted.otherPersonName && extracted.otherPersonPhone) {
+          extracted.otherPersonDetails = `${extracted.otherPersonName} - ${extracted.otherPersonPhone}`;
+        }
+        break;
+
+      case 'claim_type':
+        // Detectar tipo de siniestro
+        const msg = message.toLowerCase();
+        if (msg.includes('agua') || msg.includes('inundación') || msg.includes('inundacion')) {
+          extracted.claimType = 'water_damage';
+          extracted.claimTypeLabel = 'Daños por agua';
+        } else if (msg.includes('incendio') || msg.includes('fuego')) {
+          extracted.claimType = 'fire';
+          extracted.claimTypeLabel = 'Incendio';
+        } else if (msg.includes('robo') || msg.includes('hurto')) {
+          extracted.claimType = 'theft';
+          extracted.claimTypeLabel = 'Robo';
+        } else if (msg.includes('cristal') || msg.includes('ventana')) {
+          extracted.claimType = 'glass';
+          extracted.claimTypeLabel = 'Rotura de cristales';
+        } else {
+          extracted.claimType = 'other';
+          extracted.claimTypeLabel = message.substring(0, 50);
+        }
+        break;
+
+      case 'severity':
+        const severity = message.toLowerCase();
+        if (severity.includes('leve') || severity.includes('menor') || severity.includes('pequeño')) {
+          extracted.severity = 'leve';
+          extracted.severityLabel = 'Leve';
+        } else if (severity.includes('moderado') || severity.includes('medio')) {
+          extracted.severity = 'moderado';
+          extracted.severityLabel = 'Moderado';
+        } else if (severity.includes('grave') || severity.includes('serio') || severity.includes('importante')) {
+          extracted.severity = 'grave';
+          extracted.severityLabel = 'Grave';
+        }
+        break;
+
+      case 'appointment_mode':
+        const mode = message.toLowerCase();
+        if (mode.includes('presencial') || mode.includes('persona') || mode.includes('visita')) {
+          extracted.appointmentMode = 'presencial';
+        } else if (mode.includes('telemática') || mode.includes('telematica') || mode.includes('video') || mode.includes('llamada')) {
+          extracted.appointmentMode = 'telematica';
+        }
+        break;
+
+      case 'preferred_date':
+        const dateValidation = await validateUserInput(message, 'fecha_cita');
+        if (dateValidation.isValid) {
+          extracted.preferredDate = dateValidation.extractedData;
+          extracted.preferredDateNormalized = dateValidation.normalizedData;
+        }
+        break;
+    }
+  } catch (error) {
+    console.error('⚠️  Error extrayendo datos:', error.message);
+  }
+
+  return extracted;
+}
+
+/**
+ * Evalúa si debe progresar a la siguiente etapa
+ */
+function evaluateStageProgression(analysis, conversation) {
+  const stage = conversation.stage;
+  const intent = analysis.intent;
+  
+  // Reglas por etapa
+  const progressionRules = {
+    initial: () => {
+      return intent === 'confirmar_datos' || intent === 'corregir_datos';
+    },
+    awaiting_corrections: () => {
+      return intent === 'proporcionar_informacion' && conversation.userData?.correctedDireccion;
+    },
+    initial_confirm: () => {
+      return intent === 'confirmar_datos';
+    },
+    attendee_select: () => {
+      return conversation.userData?.attendee !== undefined;
+    },
+    other_person_details: () => {
+      return conversation.userData?.otherPersonDetails !== undefined;
+    },
+    claim_type: () => {
+      return conversation.userData?.claimType !== undefined;
+    },
+    severity: () => {
+      return conversation.userData?.severity !== undefined;
+    },
+    appointment_mode: () => {
+      return conversation.userData?.appointmentMode !== undefined;
+    },
+    preferred_date: () => {
+      return conversation.userData?.preferredDate !== undefined;
+    },
+    final_confirmation: () => {
+      return intent === 'confirmar_datos';
+    }
+  };
+
+  const rule = progressionRules[stage];
+  if (!rule) return false;
+
+  const shouldProgress = rule();
+  console.log(`   Evaluación progresión (${stage}):`, shouldProgress);
+  
+  return shouldProgress;
 }
 
 /**
@@ -195,25 +325,31 @@ function buildContext(conversation, analysis) {
 function shouldEscalate(analysis, conversation) {
   // Escalación explícita
   if (analysis.needsHumanSupport) {
-    console.log('⚠️  Escalación: Usuario necesita soporte humano');
+    console.log('⚠️  Escalación: Usuario solicitó soporte humano');
     return true;
   }
 
-  // Sentimiento muy negativo
+  // Sentimiento muy negativo con alta confianza
   if (analysis.sentiment === 'negativo' && analysis.confidence > 0.8) {
     console.log('⚠️  Escalación: Sentimiento muy negativo');
     return true;
   }
 
   // Usuario frustrado repetidamente
-  if (conversation.frustrationDetected && conversation.offTopicCount >= 2) {
-    console.log('⚠️  Escalación: Usuario frustrado');
+  if (conversation.frustrationDetected && (conversation.offTopicCount || 0) >= 2) {
+    console.log('⚠️  Escalación: Usuario frustrado con múltiples intentos');
     return true;
   }
 
-  // Múltiples intentos sin progreso
-  if (conversation.attempts >= 3 && conversation.stage === conversation.prevStage) {
-    console.log('⚠️  Escalación: Sin progreso después de 3 intentos');
+  // Muchos intentos sin progreso en la misma etapa
+  if ((conversation.attempts || 0) >= 4 && conversation.stage === conversation.prevStage) {
+    console.log('⚠️  Escalación: 4+ intentos sin progreso');
+    return true;
+  }
+
+  // Confusión persistente
+  if (analysis.intent === 'confundido' && (conversation.attempts || 0) >= 2) {
+    console.log('⚠️  Escalación: Usuario confundido persistentemente');
     return true;
   }
 
@@ -224,118 +360,109 @@ function shouldEscalate(analysis, conversation) {
  * Maneja la escalación a humano
  */
 function handleEscalation(analysis, conversation, senderNumber) {
-  console.log('🚨 Escalando conversación a humano...');
+  console.log('🚨 Escalando conversación a agente humano...');
   
   const reason = analysis.needsHumanSupport 
     ? 'Usuario solicitó soporte humano'
     : analysis.sentiment === 'negativo'
     ? 'Sentimiento negativo detectado'
+    : analysis.intent === 'confundido'
+    ? 'Usuario confundido'
     : 'Usuario frustrado o sin progreso';
 
   conversationManager.createOrUpdateConversation(senderNumber, {
     status: 'escalated',
     stage: 'escalated',
     escalatedAt: Date.now(),
-    escalationReason: reason
+    escalationReason: reason,
+    escalationDetails: {
+      lastIntent: analysis.intent,
+      lastSentiment: analysis.sentiment,
+      attempts: conversation.attempts,
+      stage: conversation.stage
+    }
   });
 
   // Respuestas personalizadas según el motivo
   if (analysis.sentiment === 'negativo') {
-    return 'Lamento mucho las molestias. Permítame transferirle con un supervisor que podrá atenderle personalmente. Un momento por favor.';
+    return 'Lamento mucho las molestias. Voy a transferirle con un supervisor que podrá atenderle personalmente. Un momento por favor.';
+  } else if (analysis.intent === 'confundido') {
+    return 'Entiendo que puede resultar confuso. Permítame conectarle con un agente que podrá explicarle todo con más detalle. Gracias por su paciencia.';
   } else if (conversation.frustrationDetected) {
-    return 'Entiendo su frustración. Voy a conectarle directamente con un agente humano que podrá ayudarle mejor. Gracias por su paciencia.';
+    return 'Comprendo su frustración. Le pongo en contacto directo con un miembro de nuestro equipo que podrá ayudarle mejor. Disculpe las molestias.';
   } else {
-    return 'Por supuesto, le pongo en contacto con un agente de nuestro equipo que le atenderá personalmente en breve. Gracias.';
+    return 'Por supuesto, le conecto con un agente de nuestro equipo que le atenderá personalmente en breve. Gracias.';
   }
 }
 
 /**
- * Actualiza el estado de la conversación basado en el análisis de IA
+ * Actualiza el estado de la conversación
  */
-function updateConversationState(analysis, conversation, senderNumber) {
-  const updates = {
-    prevStage: conversation.stage // Guardar stage anterior para detectar progreso
-  };
-
-  // Actualizar stage/status según la intención
-  switch (analysis.intent) {
-    case 'confirmar_datos':
-      if (conversation.stage === 'initial' || conversation.stage === 'initial_confirm') {
-        updates.stage = 'attendee_select';
-        updates.status = 'awaiting_attendee';
-        console.log('📝 Estado actualizado: datos confirmados');
-      }
-      break;
-      
-    case 'corregir_datos':
-      if (conversation.stage === 'initial' || conversation.stage === 'initial_confirm') {
-        updates.stage = 'awaiting_corrections';
-        updates.status = 'responded';
-        console.log('📝 Estado actualizado: esperando correcciones');
-      }
-      break;
-      
-    case 'solicitar_ayuda':
-      updates.needsAssistance = true;
-      updates.assistanceRequestedAt = Date.now();
-      console.log('📝 Usuario solicitó ayuda');
-      break;
-      
-    case 'fuera_de_tema':
-      updates.offTopicCount = (conversation.offTopicCount || 0) + 1;
-      console.log('📝 Mensaje fuera de tema detectado:', updates.offTopicCount);
-      
-      // Si está muy fuera de tema, marcar para posible escalación
-      if (updates.offTopicCount >= 3) {
-        updates.status = 'needs_review';
-        console.log('⚠️  Usuario fuera de tema 3+ veces');
-      }
-      break;
-      
-    case 'frustrado':
-      updates.frustrationDetected = true;
-      updates.frustrationAt = Date.now();
-      console.log('📝 Frustración detectada');
-      break;
-  }
-
-  // Actualizar sentimiento general
-  if (analysis.sentiment) {
-    updates.lastSentiment = analysis.sentiment;
-    updates.lastSentimentConfidence = analysis.confidence;
-  }
-
-  // Solo actualizar si hay cambios
-  if (Object.keys(updates).length > 1) { // > 1 porque siempre hay prevStage
-    console.log('📝 Actualizando estado de conversación:', updates);
-    conversationManager.createOrUpdateConversation(senderNumber, updates);
-  }
-}
-
-/**
- * Valida y extrae datos del usuario usando IA
- * (Función auxiliar para uso futuro)
- */
-async function extractAndValidateData(message, expectedType, senderNumber) {
-  console.log(`🔍 Validando entrada: "${message}" como tipo "${expectedType}"`);
+function updateConversationState(senderNumber, updates, userMessage, botResponse) {
+  const history = conversationManager.getConversation(senderNumber)?.history || [];
   
-  try {
-    const validation = await validateUserInput(message, expectedType);
-    
-    if (validation.isValid) {
-      console.log('✅ Dato válido:', validation.extractedData);
-      return validation.extractedData;
-    } else {
-      console.log('⚠️  Dato inválido:', validation.issues);
-      return null;
-    }
-  } catch (error) {
-    console.error('❌ Error validando dato:', error);
-    return message; // Devolver original si falla la validación
+  // Agregar al historial
+  history.push(
+    { role: 'user', content: userMessage, timestamp: Date.now() },
+    { role: 'assistant', content: botResponse, timestamp: Date.now() }
+  );
+
+  // Mantener solo últimos 30 mensajes
+  const trimmedHistory = history.slice(-30);
+
+  // Actualizar
+  conversationManager.createOrUpdateConversation(senderNumber, {
+    ...updates,
+    history: trimmedHistory,
+    lastResponseAt: Date.now(),
+    prevStage: conversationManager.getConversation(senderNumber)?.stage
+  });
+
+  console.log('💾 Estado actualizado:', {
+    stage: updates.stage,
+    status: updates.status,
+    attempts: updates.attempts,
+    historySize: trimmedHistory.length
+  });
+}
+
+/**
+ * Manejo de errores
+ */
+function handleError(error, conversation, senderNumber) {
+  console.error('🔥 Error crítico en processMessage');
+  console.error('   Error:', error.message);
+  console.error('   Stage:', conversation?.stage);
+  console.error('   User:', senderNumber);
+
+  // Registrar el error
+  conversationManager.createOrUpdateConversation(senderNumber, {
+    lastError: {
+      message: error.message,
+      stage: conversation?.stage,
+      timestamp: Date.now()
+    },
+    errorCount: (conversation?.errorCount || 0) + 1
+  });
+
+  // Si hay muchos errores, escalar
+  if ((conversation?.errorCount || 0) >= 3) {
+    conversationManager.createOrUpdateConversation(senderNumber, {
+      status: 'escalated',
+      stage: 'escalated',
+      escalatedAt: Date.now(),
+      escalationReason: 'Múltiples errores técnicos'
+    });
+    return 'Disculpe, estamos experimentando problemas técnicos. Voy a ponerle en contacto con un agente humano que podrá ayudarle. Gracias por su paciencia.';
   }
+
+  // Respuesta de error genérica
+  return 'Disculpe, estoy teniendo un problema técnico momentáneo. ¿Podría reformular su mensaje o intentarlo de nuevo en unos segundos?';
 }
 
 module.exports = {
   processMessage,
-  extractAndValidateData
+  handleEscalation,
+  updateConversationState,
+  handleError
 };

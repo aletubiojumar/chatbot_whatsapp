@@ -1,18 +1,24 @@
+// src/bot/reminderScheduler.js
+// Sistema de recordatorios automáticos usando Gemini AI
 const conversationManager = require('./conversationManager');
-const { sendTemplateMessage, sendSimpleMessageWithText } = require('./sendMessage');
+const { sendAIGeneratedMessage } = require('./sendMessage');
+const { generateResponse } = require('../ai/aiModel');
 require('dotenv').config();
 
-const FROM_NUMBER = process.env.TWILIO_FROM_NUMBER;
-const CONTENT_SID = process.env.CONTENT_SID;
+// ⭐ Configuración desde .env
+const SCHEDULER_CHECK_INTERVAL_HOURS = Number(process.env.SCHEDULER_CHECK_INTERVAL_HOURS || 6);
+const MAX_REMINDER_ATTEMPTS = Number(process.env.MAX_REMINDER_ATTEMPTS || 3);
 
-const { isWithinSendWindow, nextSendTimeMs } = require('./timeWindow');
+// Convertir a milisegundos
+const SCHEDULER_CHECK_INTERVAL_MS = SCHEDULER_CHECK_INTERVAL_HOURS * 60 * 60 * 1000;
 
 /**
  * Procesa recordatorios pendientes
- * - Si está fuera de horario (08-21), NO envía y reprograma al próximo 08:00
+ * Usa Gemini AI para generar recordatorios naturales y contextuales
  */
 async function processReminders() {
   console.log('\n🔔 Verificando conversaciones que necesitan recordatorio...');
+  console.log(`⚙️  Configuración: ${MAX_REMINDER_ATTEMPTS} intentos máximos`);
 
   const conversations = conversationManager.getConversationsNeedingReminder();
 
@@ -21,23 +27,77 @@ async function processReminders() {
     return;
   }
 
-  // Si fuera de horario, reprogramar y salir
-  if (!isWithinSendWindow()) {
-    const sendAt = nextSendTimeMs(new Date());
-    for (const conv of conversations) {
-      conversationManager.createOrUpdateConversation(conv.phoneNumber, { nextReminderAt: sendAt });
-    }
-    console.log(`🕘 Fuera de horario. Recordatorios reprogramados para ${new Date(sendAt).toLocaleString()}`);
-    return;
-  }
-
   console.log(`📤 Enviando ${conversations.length} recordatorio(s)...`);
 
   for (const conv of conversations) {
     try {
-      await sendTemplateMessage(conv.phoneNumber, FROM_NUMBER, CONTENT_SID);
+      const currentAttempt = (conv.attempts || 0) + 1;
+      
+      console.log(`\n📱 Procesando: ${conv.phoneNumber}`);
+      console.log(`   Intento: ${currentAttempt}/${MAX_REMINDER_ATTEMPTS}`);
+      console.log(`   Stage: ${conv.stage}`);
+
+      // Construir contexto para Gemini AI
+      const context = {
+        phoneNumber: conv.phoneNumber,
+        status: conv.status,
+        stage: conv.stage,
+        userData: conv.userData,
+        metadata: {
+          attempts: conv.attempts || 0,
+          isReminder: true,
+          reminderNumber: currentAttempt
+        }
+      };
+
+      // Generar mensaje de recordatorio con Gemini AI
+      // El tono varía según el número de intento
+      let reminderPrompt;
+      
+      if (currentAttempt === 1) {
+        // Primer recordatorio: amable y suave
+        reminderPrompt = `El usuario no ha respondido aún. Envía un recordatorio AMABLE y BREVE preguntando si ha podido revisar los datos.
+        
+Datos del siniestro:
+- Dirección: ${conv.userData?.direccion || 'No disponible'}
+- Fecha: ${conv.userData?.fecha || 'No disponible'}
+- Nombre: ${conv.userData?.nombre || 'No disponible'}
+
+IMPORTANTE: 
+- Máximo 2 líneas
+- Tono muy amable y comprensivo
+- No presionar`;
+
+      } else if (currentAttempt === 2) {
+        // Segundo recordatorio: más directo pero aún cordial
+        reminderPrompt = `Este es el segundo recordatorio. El usuario aún no ha respondido. Envía un mensaje DIRECTO pero CORDIAL recordando que necesitamos su confirmación.
+
+IMPORTANTE:
+- Máximo 2-3 líneas
+- Tono profesional pero cercano
+- Mencionar que es importante su respuesta`;
+
+      } else {
+        // Último recordatorio: urgente pero respetuoso
+        reminderPrompt = `Este es el ÚLTIMO recordatorio antes de escalar. Envía un mensaje URGENTE pero RESPETUOSO indicando que necesitamos su respuesta urgentemente o el perito le llamará directamente.
+
+IMPORTANTE:
+- Máximo 3 líneas
+- Tono urgente pero profesional
+- Mencionar que es la última oportunidad antes de que el perito llame`;
+      }
+
+      const reminderMessage = await generateResponse(reminderPrompt, context);
+      
+      // Enviar mensaje
+      await sendAIGeneratedMessage(conv.phoneNumber, reminderMessage);
+      
+      // Incrementar intentos (esto también programa el siguiente recordatorio)
       conversationManager.incrementAttempts(conv.phoneNumber);
-      console.log(`✅ Recordatorio enviado a ${conv.phoneNumber} (Intento ${conv.attempts + 1}/3)`);
+      
+      console.log(`✅ Recordatorio ${currentAttempt}/${MAX_REMINDER_ATTEMPTS} enviado`);
+      console.log(`   Preview: ${reminderMessage.substring(0, 50)}...`);
+
     } catch (error) {
       console.error(`❌ Error enviando recordatorio a ${conv.phoneNumber}:`, error.message);
     }
@@ -45,11 +105,12 @@ async function processReminders() {
 }
 
 /**
- * Procesa conversaciones que necesitan escalación (3 intentos sin respuesta)
- * - También respeta horario (si fuera, reprograma la "escalación" al próximo 08:00)
+ * Procesa conversaciones que necesitan escalación
+ * Se llama cuando se alcanza MAX_REMINDER_ATTEMPTS sin respuesta
  */
 async function processEscalations() {
   console.log('\n⚠️  Verificando conversaciones para escalar...');
+  console.log(`⚙️  Configuración: Escalar después de ${MAX_REMINDER_ATTEMPTS} intentos sin respuesta`);
 
   const conversations = conversationManager.getConversationsNeedingEscalation();
 
@@ -58,27 +119,51 @@ async function processEscalations() {
     return;
   }
 
-  if (!isWithinSendWindow()) {
-    const sendAt = nextSendTimeMs(new Date());
-    // No tienes un campo específico para "escalateAt", así que usamos nextReminderAt
-    for (const conv of conversations) {
-      conversationManager.createOrUpdateConversation(conv.phoneNumber, { nextReminderAt: sendAt });
-    }
-    console.log(`🕘 Fuera de horario. Escalaciones reprogramadas para ${new Date(sendAt).toLocaleString()}`);
-    return;
-  }
-
   console.log(`📞 Escalando ${conversations.length} conversación(es)...`);
 
   for (const conv of conversations) {
     try {
-      const mensajeEscalacion =
-        'Debido a que no ha habido respuesta se procederá a la llamada al asegurado/a por parte del perito.\nUn saludo.';
+      console.log(`\n🚨 Escalando: ${conv.phoneNumber}`);
+      console.log(`   Intentos realizados: ${conv.attempts}`);
+      console.log(`   Última actividad: ${new Date(conv.lastMessageAt).toLocaleString()}`);
 
-      await sendSimpleMessageWithText(conv.phoneNumber, FROM_NUMBER, mensajeEscalacion);
+      // Construir contexto para Gemini AI
+      const context = {
+        phoneNumber: conv.phoneNumber,
+        status: 'escalated',
+        stage: 'escalated',
+        userData: conv.userData,
+        metadata: {
+          attempts: conv.attempts,
+          isEscalation: true
+        }
+      };
+
+      // Generar mensaje de escalación con Gemini AI
+      const escalationPrompt = `El usuario no ha respondido después de ${MAX_REMINDER_ATTEMPTS} intentos. 
+      
+Envía un mensaje PROFESIONAL y DEFINITIVO informando que:
+1. Debido a la falta de respuesta
+2. El perito procederá a llamarle directamente
+3. Agradecer su comprensión
+
+IMPORTANTE:
+- Máximo 3 líneas
+- Tono profesional pero cordial
+- NO usar tono de reproche
+- Despedida cortés`;
+
+      const escalationMessage = await generateResponse(escalationPrompt, context);
+
+      // Enviar mensaje
+      await sendAIGeneratedMessage(conv.phoneNumber, escalationMessage);
+      
+      // Marcar como escalada
       conversationManager.markAsEscalated(conv.phoneNumber);
 
-      console.log(`✅ Conversación escalada: ${conv.phoneNumber}`);
+      console.log(`✅ Conversación escalada exitosamente`);
+      console.log(`   Preview: ${escalationMessage.substring(0, 50)}...`);
+
     } catch (error) {
       console.error(`❌ Error escalando conversación ${conv.phoneNumber}:`, error.message);
     }
@@ -87,29 +172,78 @@ async function processEscalations() {
 
 /**
  * Inicia el scheduler de recordatorios
- * Ejecuta cada 6 horas
+ * Frecuencia configurable desde .env
  */
 function startReminderScheduler() {
-  console.log('🚀 Iniciando scheduler de recordatorios...');
-  console.log('⏰ Se ejecutará cada 6 horas');
+  console.log('\n╔════════════════════════════════════════════════════════════╗');
+  console.log('║         SCHEDULER DE RECORDATORIOS INICIADO                ║');
+  console.log('╚════════════════════════════════════════════════════════════╝');
+  console.log('');
+  console.log('⚙️  Configuración actual:');
+  console.log(`   🔄 Frecuencia de verificación: cada ${SCHEDULER_CHECK_INTERVAL_HOURS} horas`);
+  console.log(`   📊 Intentos máximos: ${MAX_REMINDER_ATTEMPTS}`);
+  console.log(`   ⏰ Intervalo entre recordatorios: ${conversationManager.REMINDER_INTERVAL_MS / (60 * 60 * 1000)} horas`);
+  console.log('');
+  console.log('ℹ️  Nota: Los horarios y días se gestionan en AWS, no en el código');
+  console.log('');
 
-  console.log('\n🔄 Ejecutando verificación inicial...');
-  processReminders().catch(console.error);
-  processEscalations().catch(console.error);
+  // Ejecutar verificación inicial al arrancar
+  console.log('🔄 Ejecutando verificación inicial...\n');
+  processReminders().catch(error => {
+    console.error('❌ Error en verificación inicial de recordatorios:', error);
+  });
+  processEscalations().catch(error => {
+    console.error('❌ Error en verificación inicial de escalaciones:', error);
+  });
 
-  setInterval(async () => {
-    console.log(`\n⏰ [${new Date().toLocaleString()}] Ejecutando verificación de recordatorios...`);
+  // Programar ejecuciones periódicas
+  const intervalId = setInterval(async () => {
+    console.log(`\n⏰ [${new Date().toLocaleString()}] Ejecutando verificación programada...`);
+    
     try {
       await processReminders();
       await processEscalations();
     } catch (error) {
       console.error('❌ Error en scheduler:', error);
     }
-  }, 21600000); // 6 horas
+  }, SCHEDULER_CHECK_INTERVAL_MS);
+
+  console.log(`✅ Scheduler configurado. Próxima verificación en ${SCHEDULER_CHECK_INTERVAL_HOURS} horas\n`);
+
+  // Retornar ID del intervalo por si se necesita detener
+  return intervalId;
+}
+
+/**
+ * Detiene el scheduler
+ */
+function stopReminderScheduler(intervalId) {
+  if (intervalId) {
+    clearInterval(intervalId);
+    console.log('🛑 Scheduler de recordatorios detenido');
+  }
+}
+
+/**
+ * Ejecuta una verificación manual (útil para testing)
+ */
+async function runManualCheck() {
+  console.log('\n🔧 Ejecutando verificación MANUAL...\n');
+  
+  try {
+    await processReminders();
+    await processEscalations();
+    console.log('\n✅ Verificación manual completada\n');
+  } catch (error) {
+    console.error('\n❌ Error en verificación manual:', error);
+    throw error;
+  }
 }
 
 module.exports = {
   startReminderScheduler,
+  stopReminderScheduler,
   processReminders,
-  processEscalations
+  processEscalations,
+  runManualCheck
 };
