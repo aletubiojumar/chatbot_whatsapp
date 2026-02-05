@@ -1,24 +1,272 @@
-// src/ai/aiModel.js (VERSIÓN MEJORADA)
+// src/ai/aiModel.js - VERSIÓN CON DOCUMENTOS WORD (usando carpeta docs/)
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const mammoth = require('mammoth');
+const fs = require('fs').promises;
+const path = require('path');
 
-const apiKey = process.env.GEMINI_API_KEY;
+// Lazy initialization - se inicializa cuando se necesita
+let genAI = null;
+let model = null;
 
-if (!apiKey) {
-  throw new Error('❌ Falta GEMINI_API_KEY en .env');
+function getModel() {
+  if (!model) {
+    const apiKey = process.env.GEMINI_API_KEY;
+
+    if (!apiKey) {
+      throw new Error('❌ Falta GEMINI_API_KEY en .env');
+    }
+
+    genAI = new GoogleGenerativeAI(apiKey);
+
+    // Configuración del modelo
+    model = genAI.getGenerativeModel({
+      model: process.env.GEMINI_MODEL || 'gemini-1.5-pro',
+      generationConfig: {
+        temperature: Number(process.env.GEMINI_TEMPERATURE) || 0.7,
+        topP: Number(process.env.GEMINI_TOP_P) || 0.95,
+        topK: Number(process.env.GEMINI_TOP_K) || 40,
+        maxOutputTokens: Number(process.env.GEMINI_MAX_OUTPUT_TOKENS) || 500,
+      },
+    });
+  }
+
+  return model;
 }
 
-const genAI = new GoogleGenerativeAI(apiKey);
+// ============================================================================
+// CARGA DE BASE DE CONOCIMIENTO DESDE DOCUMENTOS WORD
+// ============================================================================
 
-// Configuración del modelo
-const model = genAI.getGenerativeModel({
-  model: process.env.GEMINI_MODEL || 'gemini-2.0-flash-exp',
-  generationConfig: {
-    temperature: 0.7,
-    topP: 0.95,
-    topK: 40,
-    maxOutputTokens: 500,
-  },
-});
+let KNOWLEDGE_BASE = '';
+let IS_INITIALIZED = false;
+
+/**
+ * Extrae texto de un archivo .docx
+ */
+async function extractTextFromDocx(filePath) {
+  try {
+    const result = await mammoth.extractRawText({ path: filePath });
+    return result.value;
+  } catch (error) {
+    console.error(`❌ Error extrayendo ${filePath}:`, error.message);
+    return '';
+  }
+}
+
+/**
+ * Analiza una transcripción y extrae patrones de conversación
+ */
+function parseTranscript(text, filename) {
+  const lines = text.split('\n').filter(line => line.trim());
+  const dialogue = [];
+  
+  for (const line of lines) {
+    // Filtrar timestamps
+    if (line.match(/\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}/)) {
+      continue;
+    }
+    
+    if (line.includes('[Jumar]')) {
+      const text = line.replace(/\[Jumar\]/g, '').trim();
+      if (text) dialogue.push({ speaker: 'agente', text });
+    } else if (line.includes('[Asegurado]')) {
+      const text = line.replace(/\[Asegurado\]/g, '').trim();
+      if (text) dialogue.push({ speaker: 'cliente', text });
+    }
+  }
+  
+  // Identificar tipo de escenario
+  let scenarioType = 'contacto_basico';
+  if (filename.includes('conversión_a_digital') || filename.includes('conversion_a_digital')) {
+    scenarioType = 'conversion_digital';
+  } else if (filename.includes('encargo_digital')) {
+    scenarioType = 'encargo_digital';
+  } else if (filename.includes('sin_exito')) {
+    scenarioType = 'rechazo_digital';
+  } else if (filename.includes('perito_presencial_por_la_zona')) {
+    scenarioType = 'perito_en_zona';
+  }
+  
+  return { scenarioType, dialogue };
+}
+
+/**
+ * Carga documentos Word y construye base de conocimiento
+ * ACTUALIZADO: Busca en carpeta 'docs/' en lugar de 'documents/'
+ */
+async function loadKnowledgeBase() {
+  if (IS_INITIALIZED) {
+    console.log('✅ Base de conocimiento ya cargada');
+    return KNOWLEDGE_BASE;
+  }
+  
+  // ⭐ CAMBIO: Usar carpeta 'docs' en lugar de 'documents'
+  const documentsPath = path.join(__dirname, '..', '..', 'docs');
+  
+  try {
+    console.log('📚 Cargando base de conocimiento desde documentos Word...');
+    console.log('📁 Ruta:', documentsPath);
+    
+    // Verificar si existe el directorio
+    try {
+      await fs.access(documentsPath);
+    } catch {
+      console.warn('⚠️  Directorio docs/ no encontrado, creando conocimiento por defecto');
+      KNOWLEDGE_BASE = buildDefaultKnowledge();
+      IS_INITIALIZED = true;
+      return KNOWLEDGE_BASE;
+    }
+    
+    const files = await fs.readdir(documentsPath);
+    const docxFiles = files.filter(file => file.endsWith('.docx'));
+    
+    if (docxFiles.length === 0) {
+      console.warn('⚠️  No se encontraron archivos .docx');
+      KNOWLEDGE_BASE = buildDefaultKnowledge();
+      IS_INITIALIZED = true;
+      return KNOWLEDGE_BASE;
+    }
+    
+    let knowledge = `# BASE DE CONOCIMIENTO - GABINETE PERICIAL ALLIANZ
+
+## INFORMACIÓN DE LA EMPRESA
+Somos el Gabinete Pericial de Allianz Seguros, especializado en la gestión de siniestros de hogar.
+
+## IDENTIDAD Y TONO
+- Nos identificamos como: "Gabinete Pericial de Allianz"
+- Tono: Profesional pero cercano y amable
+- Tratamiento: "Usted" de forma respetuosa
+- Saludos: Buenos días / Buenas tardes según la hora
+
+## ESCENARIOS DE CONVERSACIÓN REALES
+
+`;
+    
+    // Procesar cada documento
+    for (const file of docxFiles) {
+      const filePath = path.join(documentsPath, file);
+      console.log(`📄 Procesando: ${file}`);
+      
+      const text = await extractTextFromDocx(filePath);
+      if (!text) continue;
+      
+      const { scenarioType, dialogue } = parseTranscript(text, file);
+      
+      knowledge += `### ESCENARIO: ${scenarioType.toUpperCase()}\n`;
+      knowledge += `**Archivo**: ${file}\n\n`;
+      
+      // Agregar ejemplo de diálogo (primeros 8 intercambios)
+      knowledge += `**Ejemplo de conversación**:\n`;
+      dialogue.slice(0, 8).forEach(msg => {
+        const speaker = msg.speaker === 'agente' ? 'AGENTE' : 'CLIENTE';
+        knowledge += `${speaker}: ${msg.text}\n`;
+      });
+      knowledge += `\n---\n\n`;
+    }
+    
+    // Agregar guías específicas extraídas de las transcripciones
+    knowledge += `## PATRONES CLAVE OBSERVADOS
+
+### 1. CONFIRMACIÓN DE DATOS
+- Siempre confirmar: dirección, fecha del siniestro, nombre del asegurado
+- Ejemplo: "Es por un parte que tenemos abierto, eh, con fecha 27/11"
+
+### 2. OFRECER VIDEOPERITACIÓN
+- Primera opción: Siempre ofrecer videoperitación (más rápida)
+- Ejemplo: "Le ofrecería la posibilidad de poder hacer una videoperitación"
+- Beneficio: "Esto sí se puede hacer ahora" / "Más rápido"
+- Si acepta: "Le va a llamar en unos minutos a ver si podemos dejarlo gestionado"
+
+### 3. DIFERENCIA PERITO/ASISTENCIA
+- Perito: Valora los daños
+- Asistencia: Repara/arregla
+- Ejemplo: "Nosotros somos el gabinete pericial, nosotros no somos la empresa de reparaciones"
+
+### 4. MANEJO DE URGENCIAS
+- Reconocer: "sin agua", "sin calefacción", "urgente"
+- Respuesta: "Vamos a intentar agilizarlo lo máximo posible"
+- Ofrecer solución rápida: videoperitación inmediata
+
+### 5. PERITO EN ZONA
+- Si el perito está cerca: "El perito está por la zona, seguramente le va a llamar"
+- Ejemplo: "En esta mañana estará por la zona, ¿vale? Le llamarán antes"
+
+### 6. SIN ÉXITO EN CONVERSIÓN DIGITAL
+- Si no puede videoperitación: No hay problema
+- Ejemplo: "No pasa nada, se lo pasamos a un compañero que pase por la zona"
+- Asegurar: "Le llamará con antelación"
+
+### 7. CIERRE PROFESIONAL
+- Despedidas: "Que tenga un buen día", "Muchas gracias", "Hasta luego"
+- Informar próximos pasos siempre
+
+## FRASES TÍPICAS DEL AGENTE
+
+**Identificación:**
+- "Le llamamos del gabinete pericial de Allianz"
+- "Es por un parte que tenemos abierto"
+
+**Confirmación de datos:**
+- "Simplemente por confirmar estos datos y el teléfono de contacto"
+- "Esto es en calle [dirección], ¿verdad?"
+
+**Videoperitación:**
+- "Como si fuera una videollamada"
+- "A través de su teléfono móvil"
+- "El perito le va a llamar en unos minutos"
+
+**Coordinación:**
+- "Le vamos a facilitar su teléfono de contacto al perito"
+- "Para que este se pueda poner en contacto con usted"
+
+**Flexibilidad:**
+- "Lo que usted diga"
+- "Lo antes posible"
+- "Vamos a intentarlo"
+
+`;
+    
+    KNOWLEDGE_BASE = knowledge;
+    IS_INITIALIZED = true;
+    
+    console.log(`✅ ${docxFiles.length} documentos cargados`);
+    console.log(`📊 Base de conocimiento: ${KNOWLEDGE_BASE.length} caracteres`);
+    
+    return KNOWLEDGE_BASE;
+    
+  } catch (error) {
+    console.error('❌ Error cargando base de conocimiento:', error);
+    KNOWLEDGE_BASE = buildDefaultKnowledge();
+    IS_INITIALIZED = true;
+    return KNOWLEDGE_BASE;
+  }
+}
+
+/**
+ * Construye conocimiento por defecto si no hay documentos
+ */
+function buildDefaultKnowledge() {
+  return `# BASE DE CONOCIMIENTO - GABINETE PERICIAL ALLIANZ
+
+## INFORMACIÓN GENERAL
+Somos el Gabinete Pericial de Allianz Seguros, especializado en siniestros de hogar.
+
+## PROCESO ESTÁNDAR
+1. Confirmación de datos del siniestro
+2. Validación de contacto del asegurado
+3. Ofrecimiento de videoperitación (opción preferida)
+4. Si no es posible digital, coordinación de visita presencial
+5. El perito contactará directamente para coordinar
+
+## PUNTOS CLAVE
+- Siempre identificarse como Gabinete Pericial de Allianz
+- Ofrecer videoperitación como primera opción
+- Explicar diferencia entre perito (valora) y asistencia (repara)
+- Priorizar casos urgentes (sin agua, sin calefacción)
+- Ser flexible y comprensivo con las necesidades del cliente
+- Despedida profesional: "Que tenga un buen día", "Muchas gracias"
+`;
+}
 
 // ============================================================================
 // DEFINICIÓN DEL FLUJO DE CONVERSACIÓN
@@ -38,9 +286,9 @@ El usuario está revisando los siguientes datos del siniestro:
 - Fecha del siniestro: ${context.userData?.fecha || 'No proporcionada'}
 - Nombre del asegurado: ${context.userData?.nombre || 'No proporcionado'}
 
+IMPORTANTE: Actúa como el Gabinete Pericial de Allianz basándote en los ejemplos de conversación.
 Tu tarea: Pregunta amablemente si los datos son correctos o si necesita corregir algo.
-Respuesta esperada: Sí/No o indicación de qué corregir.
-Mantén la pregunta corta y clara.`
+Mantén la pregunta corta y clara, como en los ejemplos reales.`
   },
 
   awaiting_corrections: {
@@ -173,14 +421,16 @@ Ayuda al usuario explicando brevemente:
 Gravedad reportada: ${context.userData?.severity || 'no especificada'}
 Tipo de siniestro: ${context.userData?.claimType || 'no especificado'}
 
-Tu tarea: Ofrecer las opciones de visita.
+IMPORTANTE: Basándote en los ejemplos de conversación, SIEMPRE ofrece videoperitación primero.
 
-Ejemplo:
-"Perfecto. ¿Prefiere una visita presencial del perito o una peritación telemática (por videollamada)?"
+Tu tarea: Ofrecer las opciones de visita, priorizando la videoperitación.
 
-Explica brevemente:
-- Presencial: El perito visita la propiedad
-- Telemática: Valoración por videollamada (más rápida)
+Ejemplo basado en las transcripciones:
+"Le ofrecería la posibilidad de poder hacer una videoperitación, eh, ahora mismo, sobre la marcha si quiere. Esto es, que en lugar de que vaya el perito, pues se hace como una especie de videollamada."
+
+Explica beneficio: "Esto sí se puede hacer ahora" o "Es más rápido"
+
+Luego pregunta: "¿Prefiere hacerlo así o prefiere que vaya el perito presencialmente?"
 `
   },
 
@@ -194,6 +444,9 @@ Explica brevemente:
 Modo de cita seleccionado: ${context.userData?.appointmentMode || 'no especificado'}
 
 Tu tarea: Solicitar fecha y horario preferidos.
+
+Si es videoperitación: "¿Está usted ahora mismo por la vivienda?" o "El perito le va a llamar en unos minutos"
+Si es presencial: "Le llamará con antelación para concertar la visita"
 
 Ejemplo:
 "¿Qué día y horario le vendría mejor para ${context.userData?.appointmentMode === 'presencial' ? 'la visita' : 'la videollamada'}?"
@@ -224,12 +477,12 @@ Tu tarea:
 2. Pregunta si todo está correcto
 3. Informa que el perito se pondrá en contacto pronto
 
-Ejemplo:
+Basándote en el tono de las transcripciones:
 "Perfecto, he registrado su caso:
 [resumen claro de todos los datos]
 
 ¿Confirma que toda la información es correcta? 
-Si es así, nuestro perito se pondrá en contacto en las próximas 24-48 horas."
+Nuestro perito se pondrá en contacto con usted pronto."
 `
   },
 
@@ -240,105 +493,84 @@ Si es así, nuestro perito se pondrá en contacto en las próximas 24-48 horas."
     aiPrompt: (context) => `
 El caso ha sido registrado exitosamente.
 
-Tu tarea: Despedida profesional y cordial.
+Tu tarea: Despedida profesional y cordial, basada en los ejemplos reales.
 
-Ejemplo:
+Ejemplos de las transcripciones:
+- "Que tenga un buen día"
+- "Muchas gracias"
+- "Hasta luego"
+
+Respuesta completa ejemplo:
 "Gracias por su tiempo. Su caso ha sido registrado correctamente. 
-Nuestro equipo se pondrá en contacto con usted pronto.
-¿Hay algo más en lo que pueda ayudarle?"
+El perito se pondrá en contacto con usted pronto.
+Que tenga un buen día."
 `
   }
 };
 
 // ============================================================================
-// SYSTEM PROMPT BASE
+// GENERACIÓN DE RESPUESTAS CON IA
 // ============================================================================
 
-const BASE_SYSTEM_PROMPT = `Eres un asistente virtual profesional de Jumar Ingeniería y Peritación, especializado en gestión de siniestros de seguros de hogar.
-
-IDENTIDAD Y TONO:
-- Nombre: Asistente Virtual de Jumar
-- Tono: Profesional, empático, cercano pero formal
-- Tratamiento: Siempre usar "usted"
-- Estilo: Claro, conciso, sin jerga técnica innecesaria
-
-REGLAS FUNDAMENTALES:
-1. ⚠️ NUNCA inventes información que no tengas
-2. ⚠️ NUNCA prometas compensaciones económicas o plazos específicos
-3. ⚠️ NUNCA avances a la siguiente etapa sin confirmación del usuario
-4. ✅ SÉ empático en situaciones de estrés del usuario
-5. ✅ Mantén respuestas cortas (máximo 3-4 líneas)
-6. ✅ Si el usuario está confundido, ofrece hablar con un humano
-7. ✅ Usa saltos de línea para mejorar legibilidad
-
-MANEJO DE SITUACIONES ESPECIALES:
-- Usuario fuera de tema → Redirigir amablemente: "Entiendo, pero ahora necesito que nos centremos en..."
-- Usuario frustrado → Ofrecer escalación: "Disculpe las molestias, ¿prefiere que le ponga con un agente?"
-- Usuario confuso → Simplificar: "Permítame explicarlo de otra forma..."
-- Datos incompletos → Solicitar claramente: "Necesito que me proporcione [dato específico]"
-
-PROHIBIDO:
-- Usar emojis excesivamente (máximo 1-2 por mensaje)
-- Hacer múltiples preguntas a la vez
-- Dar información legal o médica
-- Discutir sobre pólizas o coberturas específicas`;
-
-// ============================================================================
-// FUNCIÓN PRINCIPAL: GENERAR RESPUESTA
-// ============================================================================
-
-async function generateResponse(userMessage, conversationContext = {}) {
+async function generateResponse(userMessage, conversationContext) {
   try {
+    // Asegurar que la base de conocimiento esté cargada
+    await loadKnowledgeBase();
+    
     const stage = conversationContext.stage || 'initial';
     const stageConfig = CONVERSATION_FLOW[stage];
 
     if (!stageConfig) {
-      console.warn(`⚠️ Stage desconocido: ${stage}, usando 'initial'`);
+      console.error('❌ Stage no encontrado:', stage);
       return generateFallbackResponse(userMessage, conversationContext);
     }
 
-    console.log(`🎯 Generando respuesta para stage: ${stage} (${stageConfig.name})`);
+    // Construir historial de conversación
+    const history = (conversationContext.history || [])
+      .slice(-6) // Últimos 6 mensajes
+      .map(msg => `${msg.role === 'user' ? 'USUARIO' : 'ASISTENTE'}: ${msg.content}`)
+      .join('\n');
 
-    // Construir el historial de conversación
-    const history = conversationContext.history || [];
-    let conversationHistory = '';
-    
-    if (history.length > 0) {
-      conversationHistory = '\n\nHISTORIAL RECIENTE:\n';
-      history.slice(-5).forEach(msg => {
-        conversationHistory += `${msg.role === 'user' ? 'Usuario' : 'Asistente'}: ${msg.content}\n`;
-      });
-    }
+    // Construir prompt completo con base de conocimiento
+    const currentHour = new Date().getHours();
+    const greeting = currentHour < 12 ? 'Buenos días' :
+                    currentHour < 20 ? 'Buenas tardes' : 'Buenas tardes';
 
-    // Construir metadata del caso
-    const caseMetadata = `
-INFORMACIÓN DEL CASO:
-- ID Conversación: ${conversationContext.phoneNumber || 'N/A'}
-- Etapa actual: ${stageConfig.name}
-- Intentos en esta etapa: ${conversationContext.attempts || 0}
-- Tiempo desde inicio: ${conversationContext.createdAt ? Math.floor((Date.now() - conversationContext.createdAt) / 60000) + ' minutos' : 'N/A'}
-`;
+    const fullPrompt = `${KNOWLEDGE_BASE}
 
-    // Obtener el prompt específico de la etapa
-    const stagePrompt = stageConfig.aiPrompt(conversationContext);
+## CONTEXTO DE LA CONVERSACIÓN
 
-    // Construir prompt completo
-    const fullPrompt = `${BASE_SYSTEM_PROMPT}
+**Saludo apropiado**: ${greeting}
 
-${caseMetadata}
+**Etapa actual**: ${stageConfig.name}
+**Entrada esperada**: ${stageConfig.expectedInput}
 
-${stagePrompt}
+**Historial reciente**:
+${history || 'Primera interacción'}
 
-${conversationHistory}
+**Mensaje del usuario**: "${userMessage}"
 
-MENSAJE ACTUAL DEL USUARIO: "${userMessage}"
+## INSTRUCCIONES ESPECÍFICAS PARA ESTA ETAPA
 
-INSTRUCCIONES FINALES:
-1. Responde SOLO a lo que el usuario ha dicho
-2. Mantente en la etapa actual: ${stageConfig.name}
-3. NO avances a la siguiente etapa por tu cuenta
-4. Respuesta máxima: 150 palabras
-5. Tu respuesta será enviada por WhatsApp, asegúrate de que sea clara y directa
+${stageConfig.aiPrompt(conversationContext)}
+
+## REGLAS CRÍTICAS
+
+1. **LONGITUD**: Máximo ${process.env.GEMINI_MAX_OUTPUT_TOKENS || 500} caracteres
+2. **FORMATO**: Texto plano, sin asteriscos, sin negritas, sin markdown
+3. **TONO**: Exactamente como en las transcripciones - profesional pero cercano
+4. **IDENTIFICACIÓN**: Eres del Gabinete Pericial de Allianz
+5. **EJEMPLOS**: Usa frases similares a las de las transcripciones reales
+6. **VIDEOPERITACIÓN**: Siempre ofrécela como primera opción si aplica
+7. **URGENCIAS**: Si el usuario menciona "urgente", "sin agua", "sin calefacción", reconócelo
+
+## VALIDACIÓN ANTES DE RESPONDER
+
+- ✅ ¿La respuesta tiene menos de 500 caracteres?
+- ✅ ¿Usé frases naturales como en las transcripciones?
+- ✅ ¿No usé asteriscos ni markdown?
+- ✅ ¿La respuesta avanza la conversación?
+- ✅ ¿Es profesional pero cercana?
 
 RESPUESTA:`;
 
@@ -346,12 +578,24 @@ RESPUESTA:`;
     console.log('   Stage:', stage);
     console.log('   Longitud prompt:', fullPrompt.length, 'caracteres');
 
-    const result = await model.generateContent(fullPrompt);
+    const result = await getModel().generateContent(fullPrompt);
     const response = result.response;
     let text = response.text().trim();
 
+    // ⚠️ VALIDACIÓN CRÍTICA: Verificar que no esté vacío
+    if (!text || text.trim() === '') {
+      console.error('⚠️  Gemini devolvió respuesta vacía, usando fallback');
+      return generateFallbackResponse(userMessage, conversationContext);
+    }
+
     // Limpieza de respuesta
     text = cleanResponse(text);
+
+    // Validar longitud máxima
+    const maxLength = Number(process.env.GEMINI_MAX_OUTPUT_TOKENS) || 500;
+    if (text.length > maxLength) {
+      text = text.substring(0, maxLength - 3) + '...';
+    }
 
     console.log('✅ Respuesta generada por IA');
     console.log('   Longitud:', text.length, 'caracteres');
@@ -361,6 +605,7 @@ RESPUESTA:`;
 
   } catch (error) {
     console.error('❌ Error en Gemini AI:', error.message);
+    console.error('   Stack:', error.stack);
     return generateFallbackResponse(userMessage, conversationContext);
   }
 }
@@ -391,7 +636,7 @@ Responde SOLO con un JSON válido (sin markdown, sin explicaciones) en este form
 
 IMPORTANTE: Responde SOLO con el JSON, sin ningún texto adicional.`;
 
-    const result = await model.generateContent(prompt);
+    const result = await getModel().generateContent(prompt);
     const text = result.response.text().trim();
 
     // Extraer JSON de la respuesta
@@ -462,7 +707,7 @@ Ejemplos:
 
 IMPORTANTE: Responde SOLO con el JSON.`;
 
-    const result = await model.generateContent(prompt);
+    const result = await getModel().generateContent(prompt);
     const text = result.response.text().trim();
 
     const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -496,9 +741,11 @@ IMPORTANTE: Responde SOLO con el JSON.`;
 // ============================================================================
 
 function cleanResponse(text) {
-  // Eliminar asteriscos de markdown
+  // Eliminar markdown
   text = text.replace(/\*\*/g, '');
   text = text.replace(/\*/g, '');
+  text = text.replace(/#{1,6}\s/g, '');
+  text = text.replace(/`/g, '');
   
   // Eliminar saltos de línea excesivos
   text = text.replace(/\n{3,}/g, '\n\n');
@@ -513,16 +760,18 @@ function generateFallbackResponse(userMessage, context) {
   const stage = context.stage || 'initial';
   
   const fallbackResponses = {
-    initial: 'Disculpe, estoy teniendo problemas técnicos. ¿Podría confirmar si los datos que le mostré son correctos?',
+    initial: 'Disculpe, ¿podría confirmar si los datos que le mostré son correctos?',
     awaiting_corrections: 'Perdone, ¿podría indicarme de nuevo qué datos necesita corregir?',
     attendee_select: '¿Quién atenderá al perito durante la visita?',
     claim_type: '¿Qué tipo de siniestro ha ocurrido?',
     severity: '¿Cómo calificaría la gravedad de los daños?',
-    appointment_mode: '¿Prefiere una visita presencial o telemática?',
-    preferred_date: '¿Qué fecha le vendría mejor para la cita?'
+    appointment_mode: 'Le ofrecería la posibilidad de hacer una videoperitación. ¿Le vendría bien?',
+    preferred_date: '¿Qué fecha le vendría mejor para la cita?',
+    final_confirmation: '¿Confirma que todos los datos son correctos?',
+    completed: 'Gracias por su tiempo. Que tenga un buen día.'
   };
   
-  return fallbackResponses[stage] || 'Disculpe, estoy teniendo problemas técnicos. ¿Podría reformular su mensaje?';
+  return fallbackResponses[stage] || 'Disculpe, ¿podría reformular su mensaje?';
 }
 
 // ============================================================================
@@ -581,6 +830,17 @@ function determineNextStage(currentStage, userIntent, userData = {}) {
 }
 
 // ============================================================================
+// INICIALIZACIÓN
+// ============================================================================
+
+// Cargar base de conocimiento al inicio
+loadKnowledgeBase().then(() => {
+  console.log('✅ Base de conocimiento lista');
+}).catch(err => {
+  console.error('❌ Error en carga inicial:', err);
+});
+
+// ============================================================================
 // EXPORTS
 // ============================================================================
 
@@ -589,5 +849,6 @@ module.exports = {
   analyzeMessage,
   validateUserInput,
   determineNextStage,
+  loadKnowledgeBase,
   CONVERSATION_FLOW
 };
