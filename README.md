@@ -42,9 +42,11 @@ El adaptador de canal implementa una **interfaz universal**:
 
 | Método | Descripción |
 |---|---|
-| `normalizeIncoming(body)` | Webhook payload → `{ channel, userId, text, timestamp, messageId, contact, from }` |
+| `normalizeIncoming(body)` | Webhook payload → `{ channel, userId, text, location, timestamp, messageId, type, from }` |
 | `sendText(to, text, opts)` | Envía texto plano, devuelve `{ messageId }` |
 | `sendTemplate(to, name, params)` | Envía template aprobado de WhatsApp |
+
+`location` solo viene relleno cuando `type === 'location'`: `{ latitude, longitude, name, address }`. El campo `address` solo lo provee Meta cuando el usuario selecciona un negocio/POI; si no, se resuelve con reverse geocoding (Nominatim/OSM).
 
 ---
 
@@ -168,17 +170,27 @@ consent → identification → valoracion → agendando → finalizado → cerra
 | `cerrado` | Silencio total — **terminal, IA bloqueada** |
 | `escalated` | Derivado a atención humana — **terminal, IA bloqueada** |
 
+### Tipos de mensaje soportados
+
+| Tipo WhatsApp | Tratamiento |
+|---|---|
+| `text` | Procesado directamente por la IA |
+| `location` | Coordenadas → reverse geocoding (Nominatim) → dirección en texto → IA |
+| Resto (`audio`, `image`, etc.) | Respuesta informativa, no se procesa |
+
 ### Pipeline de un mensaje entrante
 
 ```
 POST /webhook
-  1. normalizeIncoming()   → objeto normalizado { channel, userId, text, … }
-  2. isDuplicate()         → descarta reintentos del webhook (dedup por messageId)
-  3. checkLimit()          → rate limit por usuario y global
-  4. processMessage()      → enruta al manejador de mensajes
-  5. canProcess()          → bloquea si stage es terminal, envía respuesta segura
-  6. procesarConIA()       → Gemini genera respuesta estructurada en JSON
-  7. adapter.sendText()    → envía respuesta al usuario por WhatsApp
+  1. normalizeIncoming()   → objeto normalizado { channel, userId, text, location, type, … }
+  2. Filtro de tipo        → pasa 'text' y 'location'; resto → respuesta informativa
+  3. isDuplicate()         → descarta reintentos del webhook (dedup por messageId)
+  4. checkLimit()          → rate limit por usuario y global
+  5. processMessage()
+       si type='location'  → reverseGeocode(lat, lon) → dirección en texto
+  6. canProcess()          → bloquea si stage es terminal, envía respuesta segura
+  7. procesarConIA()       → Gemini genera respuesta estructurada en JSON
+  8. adapter.sendText()    → envía respuesta al usuario por WhatsApp
 ```
 
 ### Schedulers automáticos

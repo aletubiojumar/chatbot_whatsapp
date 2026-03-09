@@ -44,9 +44,15 @@ function normalizeIncoming(body) {
     const message = messages[0];
     const contact = value.contacts?.[0];
 
-    // Solo procesamos mensajes de texto por ahora
-    // (audio/imagen: devolvemos el objeto igualmente para que el handler decida)
     const text = message.text?.body || '';
+
+    // Extraer datos de ubicación si el mensaje es de tipo location
+    const location = message.type === 'location' ? {
+      latitude:  message.location?.latitude,
+      longitude: message.location?.longitude,
+      name:      message.location?.name    || null,
+      address:   message.location?.address || null,
+    } : null;
 
     return {
       channel: CHANNEL,
@@ -54,7 +60,8 @@ function normalizeIncoming(body) {
       text: text.trim(),
       timestamp: Number(message.timestamp) * 1000,
       messageId: message.id,                   // wamid
-      type: message.type,                      // 'text' | 'audio' | 'image' ...
+      type: message.type,                      // 'text' | 'audio' | 'image' | 'location' ...
+      location,
       from: {
         phone: message.from,
         name: contact?.profile?.name || null,

@@ -122,6 +122,35 @@ function detectEconomicEstimate(text) {
   return null;
 }
 
+async function reverseGeocode(lat, lon) {
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&addressdetails=1&accept-language=es`;
+    const res = await axios.get(url, {
+      timeout: 5000,
+      headers: { 'User-Agent': 'BotPericialJumar/1.0' },
+    });
+    const a = res.data?.address;
+    if (!a) return null;
+
+    const road     = a.road || a.pedestrian || a.footway || '';
+    const number   = a.house_number || '';
+    const cp       = a.postcode || '';
+    const city     = a.city || a.town || a.village || a.municipality || '';
+    const province = a.province || a.state || '';
+
+    const parts = [
+      road && number ? `${road} ${number}` : road,
+      cp,
+      city,
+      province !== city ? province : '',
+    ].filter(Boolean);
+
+    return { address: parts.join(', '), cp, city, displayName: res.data.display_name };
+  } catch {
+    return null;
+  }
+}
+
 async function lookupCP(text) {
   const match = text.match(/\b(\d{5})\b/);
   if (!match) return null;
@@ -146,7 +175,30 @@ async function lookupCP(text) {
  */
 async function processMessage(waId, messageObj) {
   try {
-    const text = (messageObj.text || '').trim();
+    let text = (messageObj.text || '').trim();
+    let locationResolved = false;
+
+    // Mensajes de ubicación compartida por WhatsApp
+    if (!text && messageObj.type === 'location' && messageObj.location?.latitude) {
+      const loc = messageObj.location;
+      if (loc.address) {
+        // Meta ya trae la dirección (negocio/POI seleccionado del mapa)
+        text = loc.address;
+        locationResolved = true;
+      } else {
+        // Ubicación actual o pin manual: resolver con reverse geocoding
+        const geo = await reverseGeocode(loc.latitude, loc.longitude);
+        if (geo) {
+          text = geo.address;
+          locationResolved = true;
+        } else {
+          // Fallback: coordenadas en texto para que la IA lo intente gestionar
+          text = `Ubicación GPS: ${loc.latitude}, ${loc.longitude}`;
+          locationResolved = true;
+        }
+      }
+    }
+
     if (!text) return;
     let stageAplicado = null;
 
@@ -210,6 +262,9 @@ async function processMessage(waId, messageObj) {
     const diasSemana = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
     const fechaHoy = `${String(hoy.getDate()).padStart(2,'0')}/${String(hoy.getMonth()+1).padStart(2,'0')}/${hoy.getFullYear()}`;
     let contextoSistema = `[INFO]: Fecha actual: ${diasSemana[hoy.getDay()]} ${fechaHoy}. Ubicación: ${valoresExcel.direccion}, CP ${valoresExcel.cp}, ${valoresExcel.municipio}.`;
+    if (locationResolved) {
+      contextoSistema += `\n[UBICACIÓN GPS]: El usuario ha compartido su ubicación por GPS. La dirección "${text}" fue obtenida automáticamente. Acéptala como la dirección del siniestro sin pedir que la escriba de nuevo.`;
+    }
     if (valoresExcel.observaciones) {
       contextoSistema += `\n[OBSERVACIONES DEL EXPEDIENTE]: ${valoresExcel.observaciones}`;
     }

@@ -74,9 +74,8 @@ app.post('/webhook', async (req, res) => {
   const msg = adapter.normalizeIncoming(body);
   if (!msg) return; // status updates, notificaciones, etc.
 
-  // Solo procesamos mensajes de texto de momento
-  // (audio/imagen → respuesta informativa)
-  if (msg.type !== 'text') {
+  // Solo procesamos texto y ubicación; el resto → respuesta informativa
+  if (msg.type !== 'text' && msg.type !== 'location') {
     log.info(`📎 Tipo de mensaje no soportado [${msg.type}] de ${log.maskPhone(msg.userId)}`);
     await adapter.sendText(
       msg.userId,
@@ -101,7 +100,10 @@ app.post('/webhook', async (req, res) => {
     return;
   }
 
-  log.info(`📥 Recibido de [${log.maskPhone(msg.userId)}]: "${msg.text.slice(0, 60)}${msg.text.length > 60 ? '[…]' : ''}"`);
+  const logPreview = msg.type === 'location'
+    ? `[ubicación GPS lat=${msg.location?.latitude} lon=${msg.location?.longitude}]`
+    : `"${msg.text.slice(0, 60)}${msg.text.length > 60 ? '[…]' : ''}"`;
+  log.info(`📥 Recibido de [${log.maskPhone(msg.userId)}]: ${logPreview}`);;
 
   try {
     await processMessage(msg.userId, msg);
