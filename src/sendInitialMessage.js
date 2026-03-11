@@ -6,7 +6,7 @@ require('dotenv').config({ override: true });
 const path = require('path');
 const XLSX = require('xlsx');
 
-const { sendInitialTemplate, buildSaludoByHour } = require('./bot/templateSender');
+const { sendInitialTemplate, buildSaludoByHour, buildInitialTemplateText } = require('./bot/templateSender');
 const conversationManager = require('./bot/conversationManager');
 const log = require('./utils/logger');
 
@@ -186,6 +186,9 @@ async function sendInitialMessages(opts = {}) {
     } else {
       try {
         await sendInitialTemplate(waId, 'inicio', { aseguradora, nexp, causa: causaTemplate });
+        conversationManager.createOrUpdateConversation(waId, {
+          mensajes: [{ direction: 'out', text: buildInitialTemplateText({ aseguradora, nexp, causa: causaTemplate }), timestamp: new Date().toISOString() }],
+        });
         console.log(`✅ Plantilla enviada correctamente`);
         resultados.ok++;
         await sleep(SEND_DELAY_MS);

@@ -184,4 +184,27 @@ function cleanOldPdfs() {
   }
 }
 
-module.exports = { generateConversationPdf, cleanOldPdfs };
+/**
+ * Elimina los snapshots de debug (debug_*.png / debug_*.html) en logs/
+ * con la misma política de días que la limpieza de filas del Excel.
+ */
+function cleanOldDebugLogs() {
+  const days = Number(process.env.SINIESTRO_CLEANUP_DAYS || 7);
+  const cutoffMs = Date.now() - days * 86400000;
+  const logsDir = path.join(__dirname, '..', '..', 'logs');
+  if (!fs.existsSync(logsDir)) return;
+
+  const files = fs.readdirSync(logsDir)
+    .filter(f => f.startsWith('debug_') && (f.endsWith('.png') || f.endsWith('.html')));
+
+  for (const file of files) {
+    const filepath = path.join(logsDir, file);
+    const { mtimeMs } = fs.statSync(filepath);
+    if (mtimeMs <= cutoffMs) {
+      fs.unlinkSync(filepath);
+      console.log(`🗑️  Debug log eliminado por antigüedad (${days}d): ${file}`);
+    }
+  }
+}
+
+module.exports = { generateConversationPdf, cleanOldPdfs, cleanOldDebugLogs };

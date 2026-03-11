@@ -22,31 +22,56 @@
 require('dotenv').config();
 const conversationManager = require('./conversationManager');
 const adapter             = require('../channels/whatsappAdapter');
-const { sendInitialTemplate } = require('./templateSender');
+const { sendInitialTemplate, buildInitialTemplateText } = require('./templateSender');
 const { triggerEncargoSync } = require('./peritolineAutoSync');
 const { isBusinessHours, cleanOldRows } = require('../utils/excelManager');
 const { procesarConIA }   = require('../ai/aiModel');
-const { generateConversationPdf, cleanOldPdfs } = require('../utils/pdfGenerator');
+const { generateConversationPdf, cleanOldPdfs, cleanOldDebugLogs } = require('../utils/pdfGenerator');
 
 const CHECK_MINUTES         = Number(process.env.SCHEDULER_CHECK_MINUTES          || 15);
 const INITIAL_RETRY_MINUTES = Number(process.env.INITIAL_RETRY_INTERVAL_MINUTES   || process.env.INITIAL_RETRY_INTERVAL_HOURS * 60 || 360);
 const INITIAL_MAX_ATTEMPTS  = Number(process.env.INITIAL_RETRY_MAX_ATTEMPTS       || 3);
 const INACTIVITY_MINUTES    = Number(process.env.INACTIVITY_INTERVAL_MINUTES      || process.env.INACTIVITY_INTERVAL_HOURS * 60  || 120);
 const INACTIVITY_MAX        = Number(process.env.INACTIVITY_MAX_ATTEMPTS          || 3);
-const MSG_FINAL_INACTIVIDAD = process.env.MSG_FINAL_INACTIVIDAD ||
-  'Debido a la inactividad, nuestro perito se pondrá en contacto con usted directamente.';
 
 const INITIAL_RETRY_MS  = INITIAL_RETRY_MINUTES * 60000;
 const INACTIVITY_MS     = INACTIVITY_MINUTES    * 60000;
+const BH_START          = Number(process.env.BUSINESS_HOURS_START || 9);
 
 let _timer = null;
+
+/**
+ * Calcula el timestamp de inicio del próximo período laboral (L-V, BH_START:00).
+ * Si ahora es un día laborable antes de la hora de apertura, devuelve hoy a BH_START:00.
+ * En cualquier otro caso (tarde, finde), devuelve el próximo día laborable a BH_START:00.
+ */
+function nextBusinessHoursStart() {
+  const d = new Date();
+  const day = d.getDay(); // 0=dom, 6=sab
+  const hour = d.getHours();
+
+  if (day >= 1 && day <= 5 && hour < BH_START) {
+    // Hoy mismo, antes de abrir
+    d.setHours(BH_START, 0, 0, 0);
+    return d.getTime();
+  }
+
+  // Siguiente día laborable
+  d.setDate(d.getDate() + 1);
+  d.setHours(BH_START, 0, 0, 0);
+  while (d.getDay() === 0 || d.getDay() === 6) {
+    d.setDate(d.getDate() + 1);
+  }
+  return d.getTime();
+}
 
 // ── Lógica de comprobación ────────────────────────────────────────────────────
 
 async function runChecks() {
-  // Limpieza del Excel y PDFs (sin restricción de horario)
+  // Limpieza del Excel, PDFs y debug logs (sin restricción de horario)
   cleanOldRows();
   cleanOldPdfs();
+  cleanOldDebugLogs();
 
   const now           = Date.now();
   const enHorario     = isBusinessHours();
@@ -64,7 +89,14 @@ async function runChecks() {
     // nextReminderAt aún no ha llegado
     if (conv.nextReminderAt && conv.nextReminderAt > now) continue;
 
-    if (!enHorario) continue;
+    if (!enHorario) {
+      // El timer ya venció pero estamos fuera de horario: posponer al inicio
+      // del próximo período laboral para no acumular "deuda" de tiempo.
+      conversationManager.createOrUpdateConversation(waId, {
+        nextReminderAt: nextBusinessHoursStart(),
+      });
+      continue;
+    }
 
     const usuarioRespondio = Boolean(conv.lastUserMessageAt);
 
@@ -92,15 +124,21 @@ async function handleInitialRetry(conv, now) {
   console.log(`🔄 Reintento inicial ${siguiente}/${INITIAL_MAX_ATTEMPTS} → nexp=${nexp}`);
 
   try {
-    await sendInitialTemplate(waId, 'inicio', {
+    const templateData = {
       aseguradora: userData?.aseguradora,
       nexp,
       causa: userData?.causa,
-    });
+    };
+    await sendInitialTemplate(waId, 'inicio', templateData);
+    const mensajesPrevios = conversationManager.getMensajes(waId);
     conversationManager.createOrUpdateConversation(waId, {
       attempts:       siguiente,
       lastReminderAt: now,
       nextReminderAt: now + INITIAL_RETRY_MS,
+      mensajes: [
+        ...mensajesPrevios,
+        { direction: 'out', text: buildInitialTemplateText(templateData), timestamp: new Date().toISOString() },
+      ],
     });
     console.log(`✅ Reintento inicial enviado (${siguiente}/${INITIAL_MAX_ATTEMPTS})`);
   } catch (err) {
@@ -167,7 +205,27 @@ async function handleInactivity(conv, now) {
 
 async function finalizar(waId, nexp) {
   try {
-    await adapter.sendText(waId, MSG_FINAL_INACTIVIDAD);
+    const conv = conversationManager.getConversation(waId);
+    const mensajes = conversationManager.getMensajes(waId);
+    const userData = conv?.userData || {};
+    const historial = mensajes.map(m => ({
+      role:  m.direction === 'in' ? 'user' : 'model',
+      parts: [{ text: m.text }],
+    }));
+    const valoresExcel = {
+      saludo:        new Date().getHours() < 12 ? 'Buenos días' : 'Buenas tardes',
+      aseguradora:   userData.aseguradora   || 'la aseguradora',
+      nexp,
+      causa:         userData.causa         || '',
+      observaciones: userData.observaciones || '',
+      nombre:        userData.nombre        || 'el titular',
+      direccion:     userData.direccion     || '',
+      cp:            userData.cp            || '',
+      municipio:     userData.municipio     || '',
+    };
+    const respuestaIA = await procesarConIA(historial, '[SISTEMA: INACTIVIDAD_FINAL]', '', valoresExcel);
+    const msgCierre = respuestaIA.mensaje_para_usuario;
+    await adapter.sendText(waId, msgCierre);
     conversationManager.createOrUpdateConversation(waId, {
       stage:    'cerrado',
       contacto: 'No',
@@ -176,9 +234,7 @@ async function finalizar(waId, nexp) {
     console.log(`🚨 Escalado por inactividad: nexp=${nexp}`);
 
     // Generar PDF de transcripción al cerrar por inactividad
-    const conv = conversationManager.getConversation(waId);
-    const mensajes = conversationManager.getMensajes(waId);
-    generateConversationPdf(nexp, conv?.userData || {}, mensajes, {
+    generateConversationPdf(nexp, userData, mensajes, {
       stage:     'cerrado',
       contacto:  'No',
       attPerito: conv?.attPerito,
@@ -220,4 +276,4 @@ function stopScheduler() {
   if (_timer) { clearInterval(_timer); _timer = null; }
 }
 
-module.exports = { startScheduler, stopScheduler, runChecks };
+module.exports = { startScheduler, stopScheduler, runChecks, _test: { nextBusinessHoursStart } };

@@ -63,4 +63,16 @@ async function sendInitialTemplate(waId, templateName = 'inicio', userData = {})
   });
 }
 
-module.exports = { sendInitialTemplate, buildSaludoByHour };
+/**
+ * Reconstruye el texto legible del template "inicio" a partir de sus variables,
+ * para poder guardarlo en el historial de mensajes.
+ */
+function buildInitialTemplateText(userData = {}) {
+  const saludo      = buildSaludoByHour();
+  const aseguradora = String(userData.aseguradora ?? '').trim();
+  const nexp        = String(userData.nexp        ?? '').trim();
+  const causa       = String(userData.causa       ?? '').trim().slice(0, 60);
+  return `${saludo}, le contactamos desde el Gabinete Pericial Jumar en relación a su siniestro con ${aseguradora} (expediente nº ${nexp}). Causa: ${causa}.`;
+}
+
+module.exports = { sendInitialTemplate, buildSaludoByHour, buildInitialTemplateText };

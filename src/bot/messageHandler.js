@@ -209,11 +209,22 @@ async function processMessage(waId, messageObj) {
       return;
     }
 
+    // ── Logger contextual (prefija [nexp] en cada línea) ─────────────────
+    const L = {
+      log:  (...a) => console.log( `[${nexp}]`, ...a),
+      warn: (...a) => console.warn(`[${nexp}]`, ...a),
+      err:  (...a) => console.error(`[${nexp}]`, ...a),
+    };
+    const msgPreview = text.length > 70 ? `${text.slice(0, 70)}…` : text;
+    console.log(`\n${'─'.repeat(65)}`);
+    console.log(`📨 [${nexp}] "${msgPreview}"`);
+    console.log('─'.repeat(65));
+
     // ── Máquina de estados ───────────────────────────────────────────────
     const conversation = conversationManager.getConversation(waId);
     const stateCheck = canProcess(conversation);
     if (!stateCheck.ok) {
-      console.log(`⛔ [${waId}] bloqueado (${stateCheck.reason}) stage=${conversation?.stage}`);
+      L.log(`⛔ Bloqueado (${stateCheck.reason}) stage=${conversation?.stage}`);
       if (stateCheck.response) {
         await adapter.sendText(waId, stateCheck.response);
         if (conversation.stage === 'finalizado') {
@@ -222,6 +233,9 @@ async function processMessage(waId, messageObj) {
       }
       return;
     }
+
+    // Detectar primera respuesta ANTES de registrar actividad
+    const isFirstResponse = !conversation.lastUserMessageAt;
 
     // Registrar actividad (resetea inactivityAttempts y nextReminderAt)
     conversationManager.recordUserMessage(waId);
@@ -337,19 +351,26 @@ async function processMessage(waId, messageObj) {
       const nuevoStage = ESTADO_IA_TO_STAGE[estado_expediente];
       if (nuevoStage) {
         if (nuevoStage === 'finalizado' && !isDefinitiveClosingMessage(respuestaIA.mensaje_para_usuario)) {
-          console.warn(`⚠️  IA marcó "finalizado" sin despedida explícita; no se cierra aún | Expediente: ${nexp}`);
+          L.warn(`⚠️  IA marcó "finalizado" sin despedida explícita; no se cierra aún`);
         } else {
           stageAplicado = nuevoStage;
           excelUpdates.stage = nuevoStage;
           excelUpdates.contacto = 'Sí'; // Conversación terminada con el asegurado
-          console.log(`🔄 Stage actualizado → ${nuevoStage} | Expediente: ${nexp}`);
+          L.log(`🔄 Stage → ${nuevoStage}`);
         }
       }
 
       conversationManager.createOrUpdateConversation(waId, excelUpdates);
 
-      // Disparo automático a PeritoLine cuando se cierra conversación con contacto válido.
-      if (excelUpdates.contacto === 'Sí' && (stageAplicado === 'finalizado' || stageAplicado === 'escalated')) {
+      // Primera respuesta del usuario → asignar perito + marcar contacto en PeritoLine
+      if (isFirstResponse) {
+        conversationManager.createOrUpdateConversation(waId, { contacto: 'Sí' });
+        triggerEncargoSync(nexp, 'primera_respuesta');
+        L.log(`🔗 Primera respuesta → sync PeritoLine iniciado (asignar perito + contacto)`);
+      }
+
+      // Disparo al cerrar conversación (principalmente para subir PDF).
+      if (!isFirstResponse && excelUpdates.contacto === 'Sí' && (stageAplicado === 'finalizado' || stageAplicado === 'escalated')) {
         triggerEncargoSync(nexp, `stage_${stageAplicado}`);
       }
 
@@ -368,14 +389,15 @@ async function processMessage(waId, messageObj) {
     }
 
     // ── Enviar respuesta ─────────────────────────────────────────────────
-    console.log(`🤖 Respuesta IA: "${respuestaIA.mensaje_para_usuario}"`);
+    const respPreview = (respuestaIA.mensaje_para_usuario || '').slice(0, 80);
+    L.log(`🤖 IA [${respuestaIA.datos_extraidos?.estado_expediente || '?'}]: "${respPreview}${respPreview.length < (respuestaIA.mensaje_para_usuario || '').length ? '…' : ''}"`);
     if (!respuestaIA.mensaje_para_usuario) {
-      console.warn(`⚠️  IA devolvió mensaje vacío — no se envía nada | Expediente: ${nexp}`);
+      L.warn(`⚠️  IA devolvió mensaje vacío — no se envía nada`);
       conversationManager.recordResponse(waId);
       return;
     }
     const result = await adapter.sendText(waId, respuestaIA.mensaje_para_usuario);
-    console.log(`✅ Enviado (msgId: ${result?.messageId}) | Expediente: ${nexp} | Entendido: ${respuestaIA.mensaje_entendido}`);
+    L.log(`✅ Enviado (msgId: ${result?.messageId}) | entendido=${respuestaIA.mensaje_entendido}`);
 
     conversationManager.recordResponse(waId);
 
@@ -383,8 +405,19 @@ async function processMessage(waId, messageObj) {
     // si el usuario vuelve a escribir. El paso a "cerrado" se hace en canProcess.
 
   } catch (error) {
-    console.error('❌ Error crítico en processMessage:', error);
+    const nexpCtx = conversationManager.getNexpByWaId(waId) || waId;
+    console.error(`[${nexpCtx}] ❌ Error crítico en processMessage:`, error);
   }
 }
 
-module.exports = { processMessage };
+module.exports = {
+  processMessage,
+  // Exportadas para tests unitarios
+  _test: {
+    isDefinitiveClosingMessage,
+    detectEconomicEstimate,
+    normalizeContactPhone,
+    isAffirmativeAck,
+    extractRelationship,
+  },
+};
