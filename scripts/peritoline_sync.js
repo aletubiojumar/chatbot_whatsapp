@@ -61,8 +61,15 @@ function normalizeContacto(raw) {
   if (s === 'en curso') return 'en_curso';
   if (s === 'si' || s === 'sí') return 'si';
   if (s === 'no') return 'no';
+  if (s === 'no encontrado') return 'no_encontrado';
+  if (s === 'error') return 'error';
   return 'unknown';
 }
+
+const ANOTACION_BY_CONTACTO = {
+  no_encontrado: '[IA] Teléfono no encontrado',
+  error:         '[IA] Contacto erróneo',
+};
 
 function v(row, ...keys) {
   for (const key of keys) {
@@ -112,7 +119,7 @@ function readTasksFromExcel(filePath, opts = {}) {
       encargo,
       contacto,
       observacionesEspeciales: buildObservacionesEspecialesText(row),
-      anotacion,
+      anotacion: anotacion || ANOTACION_BY_CONTACTO[contacto] || '',
     });
   }
   return tasks;
@@ -608,7 +615,7 @@ async function addAnotacionEncargo(page, text) {
 }
 
 async function processTask(page, task) {
-  const shouldFail = task.contacto === 'no';
+  const shouldFail = task.contacto === 'no' || task.contacto === 'no_encontrado' || task.contacto === 'error';
   await openByEncargo(page, task.encargo);
   await addObservacionesEspeciales(page, task.observacionesEspeciales);
   // PeritoLine puede redirigir al dashboard al guardar — reabrimos el encargo
