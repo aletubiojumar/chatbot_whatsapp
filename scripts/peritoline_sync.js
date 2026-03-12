@@ -587,7 +587,7 @@ async function isPeritoAssigned(page, peritoName) {
 async function confirmDeletePeritoModal(page) {
   const modalCandidates = [
     page.locator('.modal-dialog:has-text("ELIMINAR PERITO"), div[role="dialog"]:has-text("ELIMINAR PERITO"), .ui-dialog:has-text("ELIMINAR PERITO"), .modal-dialog:has-text("Eliminar perito"), div[role="dialog"]:has-text("Eliminar perito"), .ui-dialog:has-text("Eliminar perito")'),
-    page.locator('.modal-dialog:visible, div[role="dialog"]:visible, .ui-dialog:visible').filter({ hasText: /eliminar.*perito|perito/i }),
+    page.locator('.modal-dialog:visible, div[role="dialog"]:visible, .ui-dialog:visible').filter({ hasText: /eliminar.*perito/i }),
   ];
   const modalReady = await waitAnyVisible(modalCandidates, 6000);
   if (!modalReady) return false;
@@ -721,16 +721,24 @@ async function desasignarPerito(page, peritoName) {
     return;
   }
 
-  // Paso 1-2: ir a PERITO/S y hacer hover sobre el nombre para que aparezca la X.
+  // Paso 1-2: ir a PERITO/S, hacer hover sobre el NOMBRE del perito para que aparezca el popup con la X.
   const peritoLower = String(peritoName || '').trim().toLowerCase();
   const cssEscaped = String(peritoName || '').replace(/["\\]/g, '\\$&');
+
+  // Acotar al bloque PERITO/S para no confundir con el menú lateral u otras zonas de la página
+  const peritoSection = page.locator(
+    'xpath=//*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ/ÁÉÍÓÚÑ", "abcdefghijklmnopqrstuvwxyz/áéíóúñ"), "perito/s")]/ancestor::*[self::td or self::div][1]'
+  ).first();
+
+  // Hover targets: primero el chip/etiqueta visible dentro de peritoSection, luego inputs como fallback
   const hoverTargets = [
+    peritoSection.locator('span, a, strong, b, div').filter({ hasText: new RegExp(escapeRegExp(peritoName), 'i') }).filter({ hasNotText: /supervisan|asignar|encargos/i }),
+    peritoSection.locator(`input[readonly][value*="${cssEscaped}" i], input.perito[value*="${cssEscaped}" i]`),
     page.locator(`input[readonly][value*="${cssEscaped}" i], input.perito[value*="${cssEscaped}" i]`),
     page.locator('input[readonly][value*="peritovirtual" i], input.perito[value*="peritovirtual" i]'),
-    page.locator(`xpath=//*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZÁÉÍÓÚÑ", "abcdefghijklmnopqrstuvwxyzáéíóúñ"), "${peritoLower}")]`),
-    page.locator('xpath=//*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZÁÉÍÓÚÑ", "abcdefghijklmnopqrstuvwxyzáéíóúñ"), "peritovirtual")]'),
   ];
-  for (const target of hoverTargets) {
+  // Hover sobre el PRIMER elemento visible (solo uno — no mover el ratón después)
+  hoverLoop: for (const target of hoverTargets) {
     const total = await target.count();
     const limit = Math.min(total, 6);
     for (let i = 0; i < limit; i++) {
@@ -738,30 +746,30 @@ async function desasignarPerito(page, peritoName) {
       if (!(await el.isVisible().catch(() => false))) continue;
       await el.scrollIntoViewIfNeeded().catch(() => {});
       await el.hover({ force: true }).catch(() => {});
-      // Algunas vistas muestran la opción de borrar en menú contextual.
-      await el.click({ button: 'right', force: true }).catch(() => {});
-      await page.waitForTimeout(200);
-      break;
+      await page.waitForTimeout(600); // Esperar a que aparezca el popup con la X
+      break hoverLoop; // Un solo hover — salir de ambos bucles
     }
   }
 
-  // Paso 3: clicar la X de desasignar (menú flotante/popover) o fallback clásico.
-  const peritoSection = page.locator(
-    'xpath=//*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ/ÁÉÍÓÚÑ", "abcdefghijklmnopqrstuvwxyz/áéíóúñ"), "perito/s")]/ancestor::*[self::td or self::div][1]'
-  ).first();
+  // Paso 3: clicar la X del popup que aparece al hacer hover sobre el nombre del perito.
   const removeCandidates = [
-    page.locator('ul.context-menu-list:visible li.context-menu-item:has(i.fa-times), ul.context-menu-list:visible li:has(i.fa-times)'),
-    page.locator('ul.context-menu-list:visible li.context-menu-item').filter({ hasText: new RegExp(`${escapeRegExp(peritoName)}|peritovirtual`, 'i') }),
-    page.locator('.popover:visible a:has-text("×"), .popover:visible button:has-text("×"), .tooltip:visible a:has-text("×"), .tooltip:visible button:has-text("×"), .ui-tooltip:visible a:has-text("×"), .ui-tooltip:visible button:has-text("×")'),
-    page.locator('.popover:visible a:has(i.fa-times), .popover:visible button:has(i.fa-times), .tooltip:visible a:has(i.fa-times), .tooltip:visible button:has(i.fa-times)'),
+    // Tooltip/popup que aparece al hovear: muestra "× | PERITVIRTUAL"
+    page.locator('.tooltip:visible a, .tooltip:visible button, .popover:visible a, .popover:visible button, .ui-tooltip:visible a, .ui-tooltip:visible button')
+      .filter({ hasText: /×/ }).filter({ hasNotText: /ocultar|siniestro/i }),
+    page.locator('.tooltip:visible a, .tooltip:visible button, .popover:visible a, .popover:visible button, .ui-tooltip:visible a, .ui-tooltip:visible button')
+      .filter({ has: page.locator('i.fa-times') }).filter({ hasNotText: /ocultar|siniestro/i }),
+    // X dentro de peritoSection (el botón que aparece en el chip al hovear)
     peritoSection.locator('a, button').filter({ hasText: /×/ }).filter({ hasNotText: /ocultar|siniestro/i }),
     peritoSection.locator('a, button').filter({ has: page.locator('i.fa-times') }).filter({ hasNotText: /ocultar|siniestro/i }),
-    page.locator('[onclick*="encargo_perito" i], [onclick*="borrar_perito" i], [onclick*="eliminar_perito" i]'),
+    // Context menu (si el sistema usa menú contextual)
+    page.locator('ul.context-menu-list:visible li.context-menu-item:has(i.fa-times), ul.context-menu-list:visible li:has(i.fa-times)'),
+    page.locator('ul.context-menu-list:visible li.context-menu-item').filter({ hasText: new RegExp(`${escapeRegExp(peritoName)}|peritovirtual`, 'i') }),
+    // Fallbacks con onclick específicos
+    page.locator('[onclick*="encargo_perito"][onclick*="delete" i], [onclick*="borrar_perito" i], [onclick*="eliminar_perito" i]'),
     page.locator(`tr:has-text("${peritoName}")`).locator('button, a').filter({ hasText: /quitar|eliminar|borrar|remove/i }),
     page.locator(`tr:has-text("${peritoName}")`).locator('[onclick*="quitar" i], [onclick*="eliminar" i], [onclick*="remove" i]'),
     page.locator(`tr:has-text("${peritoName}")`).locator('button:has(i.fa-minus), button:has(i.fa-times), button:has(i.fa-trash)'),
     page.locator(`tr:has-text("${peritoName}")`).locator('a:has(i.fa-minus), a:has(i.fa-times), a:has(i.fa-trash)'),
-    page.locator(`tr:has-text("${peritoName}")`).locator('.btn-danger, .btn-warning'),
     page.locator('[onclick*="quitar_perito" i], [onclick*="eliminar_perito" i], [onclick*="remove_perito" i]'),
     page.locator('button:has-text("Quitar"), a:has-text("Quitar"), button:has-text("Eliminar"), a:has-text("Eliminar")'),
   ];
