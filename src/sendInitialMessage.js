@@ -8,6 +8,7 @@ const XLSX = require('xlsx');
 
 const { sendInitialTemplate, buildSaludoByHour, buildInitialTemplateText } = require('./bot/templateSender');
 const conversationManager = require('./bot/conversationManager');
+const { triggerEncargoSync } = require('./bot/peritolineAutoSync');
 const log = require('./utils/logger');
 
 // ── Configuración ─────────────────────────────────────────────────────────
@@ -179,7 +180,12 @@ async function sendInitialMessages(opts = {}) {
       });
     }
 
-    // 3. Enviar plantilla inicial
+    // 3. Asignar perito virtual en PeritoLine antes de enviar el mensaje
+    if (!dryRun) {
+      triggerEncargoSync(nexp, 'envio_inicial', '', true);
+    }
+
+    // 4. Enviar plantilla inicial
     if (dryRun) {
       console.log(`🔵 [DRY-RUN] Enviaría plantilla "inicio" a ${waId}`);
       resultados.ok++;

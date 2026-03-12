@@ -155,10 +155,12 @@ const reglasControl = `
     }
   }
 
+  // Todos los modelos agotados — escalar para evitar bucle
+  console.error('🚨 Todos los modelos Gemini fallaron — escalando conversación');
   return {
-    mensaje_para_usuario: "Disculpe, no he podido procesar correctamente su último mensaje. ¿Podría repetirlo?",
-    mensaje_entendido: false,
-    datos_extraidos: { estado_expediente: "identificacion" }
+    mensaje_para_usuario: 'El perito se pondrá en contacto con usted, un saludo.',
+    mensaje_entendido: true,
+    datos_extraidos: { estado_expediente: 'escalado_humano' },
   };
 }
 

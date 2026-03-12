@@ -38,7 +38,7 @@ const LAUNCH_ARGS = (process.env.PLAYWRIGHT_LAUNCH_ARGS
   .filter(Boolean);
 
 function parseArgs(argv) {
-  const out = { encargo: null, anotacion: '' };
+  const out = { encargo: null, anotacion: '', assignOnly: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--encargo' && argv[i + 1]) {
@@ -48,6 +48,9 @@ function parseArgs(argv) {
     if (arg === '--anotacion' && argv[i + 1]) {
       out.anotacion = String(argv[i + 1]).trim();
       i++;
+    }
+    if (arg === '--assign-only') {
+      out.assignOnly = true;
     }
   }
   return out;
@@ -614,19 +617,71 @@ async function addAnotacionEncargo(page, text) {
   console.warn('⚠️  No se encontró el campo "Anotación Encargo 01" — se omite anotación');
 }
 
+async function desasignarPerito(page, peritoName) {
+  // Verificar que el perito esté asignado
+  const sinPerito = page.locator('button, a, span').filter({ hasText: /sin perito asignado/i }).first();
+  if (await sinPerito.isVisible().catch(() => false)) {
+    console.log('ℹ️  Ya sin perito asignado; se omite desasignación.');
+    return;
+  }
+
+  // Buscar botón de quitar/eliminar asociado al perito virtual.
+  // PeritoLine suele usar un cuadrado coloreado (btn-danger/btn-warning) o icono
+  // fa-minus / fa-times junto al nombre del perito en la sección PERITO/S.
+  const candidates = [
+    page.locator(`tr:has-text("${peritoName}")`).locator('button, a').filter({ hasText: /quitar|eliminar|borrar|remove/i }),
+    page.locator(`tr:has-text("${peritoName}")`).locator('[onclick*="quitar" i], [onclick*="eliminar" i], [onclick*="remove" i]'),
+    page.locator(`tr:has-text("${peritoName}")`).locator('button:has(i.fa-minus), button:has(i.fa-times), button:has(i.fa-trash)'),
+    page.locator(`tr:has-text("${peritoName}")`).locator('a:has(i.fa-minus), a:has(i.fa-times), a:has(i.fa-trash)'),
+    page.locator(`tr:has-text("${peritoName}")`).locator('.btn-danger, .btn-warning'),
+    page.locator('[onclick*="quitar_perito" i], [onclick*="eliminar_perito" i]'),
+    page.locator('button:has-text("Quitar"), a:has-text("Quitar")'),
+  ];
+
+  const clicked = await clickFirstExisting(candidates);
+  if (!clicked) {
+    await saveDebugSnapshot(page, 'desasignar_perito');
+    console.warn('⚠️  No se encontró botón para desasignar perito — revisa el snapshot en logs/');
+    return;
+  }
+
+  // Aceptar modal de confirmación si aparece
+  await page.waitForTimeout(800);
+  const confirmModal = page.locator('.modal-dialog:visible, div[role="dialog"]:visible, .ui-dialog:visible').first();
+  if (await confirmModal.count() && await confirmModal.isVisible().catch(() => false)) {
+    await clickFirstExisting([
+      confirmModal.getByRole('button', { name: /aceptar|confirmar|s[ií]/i }),
+      confirmModal.locator('button:has-text("Aceptar"), button:has-text("Sí"), button:has-text("Si")'),
+    ]);
+    await confirmModal.waitFor({ state: 'hidden', timeout: TIMEOUT_MS }).catch(() => {});
+  }
+
+  await page.waitForTimeout(500);
+  console.log(`🗑️  Perito "${peritoName}" desasignado`);
+}
+
 async function processTask(page, task) {
   const shouldFail = task.contacto === 'no' || task.contacto === 'no_encontrado' || task.contacto === 'error';
+  const doPerito = task.contacto === 'si' && VIRTUAL_PERITO_NAME;
+
+  // 1. Abrir el encargo
   await openByEncargo(page, task.encargo);
-  await addObservacionesEspeciales(page, task.observacionesEspeciales);
-  // PeritoLine puede redirigir al dashboard al guardar — reabrimos el encargo
-  await openByEncargo(page, task.encargo);
-  // Asignar perito virtual antes de marcar contacto (PeritoLine lo requiere)
-  if (task.contacto === 'si' && VIRTUAL_PERITO_NAME) {
+
+  // 2. Asignar perito virtual — PRIMER paso tras abrir el encargo
+  if (doPerito) {
     await asignarPerito(page, VIRTUAL_PERITO_NAME);
     await openByEncargo(page, task.encargo);
   }
-  // Escribir anotación del encargo (tipo de cita o motivo de cierre)
+
+  // 3. Añadir observaciones especiales del siniestro
+  await addObservacionesEspeciales(page, task.observacionesEspeciales);
+  // PeritoLine puede redirigir al dashboard al guardar — reabrimos el encargo
+  await openByEncargo(page, task.encargo);
+
+  // 4. Escribir anotación del encargo (tipo de cita o motivo de cierre)
   await addAnotacionEncargo(page, task.anotacion);
+
+  // 5. Marcar contacto
   try {
     const modal = await openContactoModal(page, { allowMissing: !shouldFail });
     if (modal) {
@@ -636,8 +691,15 @@ async function processTask(page, task) {
   } catch (err) {
     console.warn(`⚠️  Modal contacto omitido (probablemente ya marcado): ${err.message}`);
   }
-  // Subir PDF de conversación (si existe)
+
+  // 6. Subir PDF de conversación (si existe)
   await uploadPdfToEncargo(page, task.encargo);
+
+  // 7. Desasignar perito virtual — dejar el encargo sin asignación
+  if (doPerito) {
+    await openByEncargo(page, task.encargo);
+    await desasignarPerito(page, VIRTUAL_PERITO_NAME);
+  }
 }
 
 async function main() {
@@ -645,6 +707,34 @@ async function main() {
     throw new Error('Faltan LOGIN_URL / USERNAME / PASSWORD en .env');
   }
 
+  // ── Modo assign-only: solo asignar perito virtual, sin leer Contacto del Excel ──
+  if (CLI.assignOnly) {
+    if (!CLI.encargo) throw new Error('--assign-only requiere --encargo');
+    if (!VIRTUAL_PERITO_NAME) {
+      console.log('ℹ️  PERITOLINE_VIRTUAL_PERITO_NAME no configurado — se omite asignación.');
+      return;
+    }
+    if (DRY_RUN) {
+      console.log(`🔵 DRY_RUN: asignaría "${VIRTUAL_PERITO_NAME}" en encargo ${CLI.encargo}`);
+      return;
+    }
+    const browser = await chromium.launch({ headless: HEADLESS, slowMo: SLOW_MO, args: LAUNCH_ARGS, chromiumSandbox: false });
+    const context = await browser.newContext({ viewport: { width: 1700, height: 1000 } });
+    const page = await context.newPage();
+    page.setDefaultTimeout(TIMEOUT_MS);
+    try {
+      await login(page);
+      await openByEncargo(page, CLI.encargo);
+      await asignarPerito(page, VIRTUAL_PERITO_NAME);
+      console.log(`✅ Perito asignado en encargo ${CLI.encargo}`);
+    } finally {
+      await context.close();
+      await browser.close();
+    }
+    return;
+  }
+
+  // ── Flujo normal: leer Excel, procesar tareas ─────────────────────────────────
   const tasks = readTasksFromExcel(EXCEL_PATH, { encargo: CLI.encargo, anotacion: CLI.anotacion });
   if (!tasks.length) {
     console.log('ℹ️ No hay siniestros para procesar (solo se procesan Contacto = Sí/No).');
