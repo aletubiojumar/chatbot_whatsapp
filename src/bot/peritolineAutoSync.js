@@ -11,7 +11,7 @@ const AUTO_SYNC_COOLDOWN_MS = Number(process.env.PERITOLINE_AUTO_SYNC_COOLDOWN_M
 const running = new Set();
 const lastRunByEncargo = new Map();
 
-function triggerEncargoSync(encargo, reason = '', anotacion = '', assignOnly = false) {
+function triggerEncargoSync(encargo, reason = '', anotacion = '', assignOnly = false, isFinalSync = false) {
   const key = String(encargo || '').trim();
   if (!key) return;
   if (!AUTO_SYNC_ENABLED) return;
@@ -33,8 +33,9 @@ function triggerEncargoSync(encargo, reason = '', anotacion = '', assignOnly = f
   const scriptPath = path.join(__dirname, '..', '..', 'scripts', 'peritoline_sync.js');
   const cwd = path.join(__dirname, '..', '..');
   const spawnArgs = [scriptPath, '--encargo', key];
-  if (anotacion) spawnArgs.push('--anotacion', anotacion);
-  if (assignOnly) spawnArgs.push('--assign-only');
+  if (anotacion)    spawnArgs.push('--anotacion', anotacion);
+  if (assignOnly)   spawnArgs.push('--assign-only');
+  if (isFinalSync)  spawnArgs.push('--final-sync');
   const child = spawn(process.execPath, spawnArgs, {
     cwd,
     env: {

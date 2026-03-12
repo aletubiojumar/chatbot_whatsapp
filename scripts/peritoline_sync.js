@@ -38,7 +38,7 @@ const LAUNCH_ARGS = (process.env.PLAYWRIGHT_LAUNCH_ARGS
   .filter(Boolean);
 
 function parseArgs(argv) {
-  const out = { encargo: null, anotacion: '', assignOnly: false };
+  const out = { encargo: null, anotacion: '', assignOnly: false, finalSync: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--encargo' && argv[i + 1]) {
@@ -49,9 +49,8 @@ function parseArgs(argv) {
       out.anotacion = String(argv[i + 1]).trim();
       i++;
     }
-    if (arg === '--assign-only') {
-      out.assignOnly = true;
-    }
+    if (arg === '--assign-only') out.assignOnly = true;
+    if (arg === '--final-sync')  out.finalSync  = true;
   }
   return out;
 }
@@ -123,6 +122,7 @@ function readTasksFromExcel(filePath, opts = {}) {
       contacto,
       observacionesEspeciales: buildObservacionesEspecialesText(row),
       anotacion: anotacion || ANOTACION_BY_CONTACTO[contacto] || '',
+      finalSync: opts.finalSync || false,
     });
   }
   return tasks;
@@ -692,13 +692,13 @@ async function processTask(page, task) {
     console.warn(`⚠️  Modal contacto omitido (probablemente ya marcado): ${err.message}`);
   }
 
-  // 6. Subir PDF de conversación (si existe)
-  await uploadPdfToEncargo(page, task.encargo);
-
-  // 7. Desasignar perito virtual — dejar el encargo sin asignación
-  if (doPerito) {
-    await openByEncargo(page, task.encargo);
-    await desasignarPerito(page, VIRTUAL_PERITO_NAME);
+  // 6. Subir PDF + desasignar perito — solo en sync de cierre de conversación
+  if (task.finalSync) {
+    await uploadPdfToEncargo(page, task.encargo);
+    if (doPerito) {
+      await openByEncargo(page, task.encargo);
+      await desasignarPerito(page, VIRTUAL_PERITO_NAME);
+    }
   }
 }
 
@@ -735,7 +735,7 @@ async function main() {
   }
 
   // ── Flujo normal: leer Excel, procesar tareas ─────────────────────────────────
-  const tasks = readTasksFromExcel(EXCEL_PATH, { encargo: CLI.encargo, anotacion: CLI.anotacion });
+  const tasks = readTasksFromExcel(EXCEL_PATH, { encargo: CLI.encargo, anotacion: CLI.anotacion, finalSync: CLI.finalSync });
   if (!tasks.length) {
     console.log('ℹ️ No hay siniestros para procesar (solo se procesan Contacto = Sí/No).');
     return;

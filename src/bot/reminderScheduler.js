@@ -230,7 +230,7 @@ async function finalizar(waId, nexp, anotacion = '') {
       stage:    'cerrado',
       contacto: 'No',
     });
-    triggerEncargoSync(nexp, 'inactividad_contacto_no', anotacion);
+    triggerEncargoSync(nexp, 'inactividad_contacto_no', anotacion, false, true);
     console.log(`🚨 Escalado por inactividad: nexp=${nexp}`);
 
     // Generar PDF de transcripción al cerrar por inactividad

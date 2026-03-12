@@ -375,7 +375,7 @@ async function processMessage(waId, messageObj) {
         let anotacion = '';
         if (digitalVal === 'Sí') anotacion = '[IA] Digital: Sí';
         else if (digitalVal === 'No') anotacion = '[IA] Digital: No';
-        triggerEncargoSync(nexp, `stage_${stageAplicado}`, anotacion);
+        triggerEncargoSync(nexp, `stage_${stageAplicado}`, anotacion, false, true);
       }
 
       // Generar PDF de transcripción al finalizar la conversación
