@@ -91,10 +91,10 @@ function buildObservacionesEspecialesText(row) {
     : `• Digital: ${digital}`;
 
   // AT. Perito se almacena como "nombre - relacion - telefono"
-  const attPeritoRaw = String(row['AT. Perito'] ?? row['ATT. Perito'] ?? row['Att. Perito'] ?? '').trim();
-  const attParts = attPeritoRaw ? attPeritoRaw.split(' - ') : [];
-  const attNombre   = (attParts[0] && attParts[0] !== 'sin indicar') ? attParts[0] : '-';
-  const attTelefono = (attParts[2] && attParts[2] !== 'sin indicar') ? attParts[2] : '';
+  const attPeritoRaw  = String(row['AT. Perito'] ?? row['ATT. Perito'] ?? row['Att. Perito'] ?? '').trim();
+  const attParts      = attPeritoRaw ? attPeritoRaw.split(' - ') : [];
+  const attNombre   = attParts[0] && attParts[0] !== 'sin indicar' ? attParts[0] : '-';
+  const attTelefono = attParts[2] && attParts[2] !== 'sin indicar' ? attParts[2] : '';
 
   // Teléfono: preferir el del asistente al perito; si no, el del asegurado
   const telefonoContacto = attTelefono || v(row, 'Teléfono');
