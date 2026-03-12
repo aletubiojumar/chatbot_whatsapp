@@ -37,6 +37,7 @@ const EXCEL_FIELDS = new Set([
   'danos',
   'digital',
   'horario',
+  'coordenadas',
 ]);
 
 function migrateLegacyTechnicalState() {

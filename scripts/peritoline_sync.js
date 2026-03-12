@@ -90,6 +90,15 @@ function buildObservacionesEspecialesText(row) {
     ? `• Digital: Sí (${horario})`
     : `• Digital: ${digital}`;
 
+  // AT. Perito se almacena como "nombre - relacion - telefono"
+  const attPeritoRaw = String(row['AT. Perito'] ?? row['ATT. Perito'] ?? row['Att. Perito'] ?? '').trim();
+  const attParts = attPeritoRaw ? attPeritoRaw.split(' - ') : [];
+  const attNombre   = (attParts[0] && attParts[0] !== 'sin indicar') ? attParts[0] : '-';
+  const attTelefono = (attParts[2] && attParts[2] !== 'sin indicar') ? attParts[2] : '';
+
+  // Teléfono: preferir el del asistente al perito; si no, el del asegurado
+  const telefonoContacto = attTelefono || v(row, 'Teléfono');
+
   const coordenadas = String(row['Coordenadas'] ?? '').trim();
   const lines = [
     '[CONTACTO CON IA] Resumen completo de la conversación con el asegurado:',
@@ -97,11 +106,11 @@ function buildObservacionesEspecialesText(row) {
     `• Dirección: ${v(row, 'Dirección')}${coordenadas ? ` (GPS: ${coordenadas})` : ''}`,
     `• CP: ${v(row, 'CP')}`,
     `• Municipio: ${v(row, 'Municipio')}`,
-    `• Teléfono: ${v(row, 'Teléfono')}`,
+    `• Teléfono: ${telefonoContacto}`,
     `• Relación: ${v(row, 'Relación', 'Relacion')}`,
     `• Daños: ${v(row, 'Daños')}`,
     digitalLine,
-    `• AT. Perito: ${v(row, 'AT. Perito', 'ATT. Perito', 'Att. Perito')}`,
+    `• AT. Perito: ${attNombre}`,
   ];
   return lines.join('\n');
 }
