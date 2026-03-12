@@ -285,6 +285,9 @@ async function processMessage(waId, messageObj) {
     if (cpInfo) {
       contextoSistema += `\n[CP DETECTADO]: El código postal ${cpInfo.cp} corresponde a ${cpInfo.localidad} (${cpInfo.provincia}). No preguntes la localidad, úsala directamente.`;
     }
+    if (conversation.idioma && conversation.idioma !== 'es') {
+      contextoSistema += `\n[IDIOMA ACTIVO]: ${conversation.idioma} — Responde SIEMPRE en este idioma, sin excepción.`;
+    }
     contextoSistema += '\n[Videoperitación]: Si el usuario no expresa dudas, no expliques funcionamiento; pregunta disponibilidad directa (mañana/tarde).';
     contextoSistema += '\n[DISTINCIÓN DE CAMPOS]: "Relación" es SOLO la relación del interlocutor actual con el asegurado. "AT. Perito" es SOLO la persona que atenderá al perito en la visita.';
     if (peritoAttendeeContext) {
@@ -317,6 +320,7 @@ async function processMessage(waId, messageObj) {
         acepta_videollamada,
         preferencia_horaria,
         estado_expediente,
+        idioma_conversacion,
       } = respuestaIA.datos_extraidos || {};
 
       const excelUpdates = {
@@ -338,6 +342,9 @@ async function processMessage(waId, messageObj) {
         const relacionAtt = String(relacion_contacto || relationFromCurrent || '').trim() || (exRelacion !== 'sin indicar' ? exRelacion : '') || 'sin indicar';
         const telefonoAtt = normalizeContactPhone(telefono_contacto) || normalizeContactPhone(exTelefono) || normalizeContactPhone(waId);
         excelUpdates.attPerito = `${nombreAtt} - ${relacionAtt} - ${telefonoAtt}`;
+      }
+      if (idioma_conversacion && idioma_conversacion !== 'es') {
+        excelUpdates.idioma = idioma_conversacion;
       }
       if (importe_estimado || estimateFromCurrent) {
         excelUpdates.danos = String(importe_estimado || estimateFromCurrent).trim();

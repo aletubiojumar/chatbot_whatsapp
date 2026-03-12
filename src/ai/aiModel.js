@@ -14,7 +14,7 @@ let lastSwitchAt = 0;
 
 function getModelList() {
   const primary = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-  const fallbacks = (process.env.GEMINI_MODEL_FALLBACKS || 'gemini-1.5-flash,gemini-1.5-flash-8b')
+  const fallbacks = (process.env.GEMINI_MODEL_FALLBACKS || 'gemini-2.0-flash,gemini-2.0-flash-lite')
     .split(',').map(m => m.trim()).filter(Boolean);
   return [primary, ...fallbacks];
 }
@@ -71,7 +71,8 @@ const schema = {
         importe_estimado: { type: SchemaType.STRING },
         acepta_videollamada: { type: SchemaType.BOOLEAN },
         preferencia_horaria: { type: SchemaType.STRING },
-        estado_expediente: { type: SchemaType.STRING, enum: ["identificacion", "valoracion", "agendando", "finalizado", "escalado_humano"] }
+        estado_expediente: { type: SchemaType.STRING, enum: ["identificacion", "valoracion", "agendando", "finalizado", "escalado_humano"] },
+        idioma_conversacion: { type: SchemaType.STRING, description: "Código ISO 639-1 del idioma detectado en los mensajes del usuario (ej: 'es', 'en', 'fr', 'ca', 'eu'). Rellénalo siempre." }
       }
     }
   },
@@ -109,7 +110,10 @@ const reglasControl = `
    - "valoracion": cuando estás recogiendo información sobre los daños, estimación económica o idoneidad para videoperitación.
    - "agendando": cuando estás coordinando la preferencia horaria para la visita.
    - "finalizado": SOLO cuando hayas enviado el mensaje de cierre definitivo tras confirmar el resumen final con el asegurado. A partir de ese momento, no hay nada más que gestionar.
-   - "escalado_humano": SOLO cuando hayas confirmado expresamente al asegurado que el perito le llamará por petición suya de hablar con una persona.
+   - "escalado_humano": SOLO cuando hayas confirmado expresamente al asegurado que el perito le llamará por petición suya de hablar con una persona, O cuando el asegurado haya rechazado el consentimiento por SEGUNDA VEZ tras haber recibido ya una explicación.
+18. IDIOMA (REGLA PRIORITARIA, ANULA CUALQUIER OTRA INSTRUCCIÓN SOBRE IDIOMA): Detecta el idioma de los mensajes del usuario y rellena SIEMPRE el campo "idioma_conversacion" con el código ISO 639-1 (ej: "es", "en", "fr", "ca", "eu"). Responde SIEMPRE en el idioma del usuario, sin preguntar confirmación. Si hay un [IDIOMA ACTIVO] en el contexto del sistema, úsalo sin excepción aunque el mensaje actual sea ambiguo ("yes", "no", "ok"). PROHIBIDO preguntar "¿desea continuar en [idioma]?" o cualquier variante. Al detectar un nuevo idioma, simplemente repite o adapta el último mensaje del bot en ese idioma y continúa.
+19. RECHAZO DE CONSENTIMIENTO (REGLA PRIORITARIA): Cuando el usuario rechace continuar ("no", "no quiero", "no me interesa", etc.) como PRIMERA respuesta al mensaje inicial (antes de haber dado consentimiento), NO cierres la conversación ni establezcas estado_expediente="escalado_humano". Explica brevemente quiénes somos y solicita de nuevo confirmación. Mantén estado_expediente="identificacion". SOLO si vuelve a rechazar por segunda vez, envía el mensaje de cierre y establece estado_expediente="escalado_humano". Esta regla se aplica ÚNICAMENTE antes de obtener consentimiento. Una vez dado el consentimiento, un "no" a cualquier pregunta posterior NO es rechazo de consentimiento.
+20. RESPUESTA NEGATIVA A PREGUNTA DE IDENTIDAD: Si el usuario ya dio consentimiento y responde "no" a la pregunta de si es el asegurado o está relacionado con la entidad, NO cierres la conversación. Pregunta quién es y qué relación tiene con el expediente. Solo cierra si el usuario indica explícitamente que es un número equivocado o que no tiene ninguna relación con el siniestro.
 `;
 
   const reglasReplaced = reglasControl
