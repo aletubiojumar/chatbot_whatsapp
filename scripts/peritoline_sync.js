@@ -521,25 +521,67 @@ function escapeRegExp(str) {
   return String(str || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function normalizeComparable(str) {
+  return String(str || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+async function getVisiblePeritoSectionText(page) {
+  const sectionCandidates = [
+    page.locator('xpath=//*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ/ÁÉÍÓÚÑ", "abcdefghijklmnopqrstuvwxyz/áéíóúñ"), "perito/s")]/ancestor::*[self::div or self::td or self::section or self::fieldset][1]'),
+    page.locator('xpath=//*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZÁÉÍÓÚÑ", "abcdefghijklmnopqrstuvwxyzáéíóúñ"), "supervisan")]/ancestor::*[self::div or self::td or self::section or self::fieldset][1]'),
+  ];
+
+  for (const loc of sectionCandidates) {
+    const total = await loc.count();
+    const limit = Math.min(total, 8);
+    for (let i = 0; i < limit; i++) {
+      const el = loc.nth(i);
+      if (!(await el.isVisible().catch(() => false))) continue;
+      const text = String(await el.innerText().catch(() => '')).trim();
+      if (!text) continue;
+      const n = normalizeComparable(text);
+      if (n.includes('perito') || n.includes('supervisan')) return text;
+    }
+  }
+
+  return '';
+}
+
 async function isPeritoAssigned(page, peritoName) {
-  const sinPeritoVisible = page.locator('button, a, span, div').filter({ hasText: /sin perito asignado/i }).first();
-  if (await sinPeritoVisible.isVisible().catch(() => false)) return false;
+  const normName = normalizeComparable(peritoName);
+  const sectionText = normalizeComparable(await getVisiblePeritoSectionText(page));
+  if (sectionText) {
+    if (sectionText.includes('sin perito asignado')) return false;
+    if (sectionText.includes(normName) || sectionText.includes('peritovirtual')) return true;
+  }
 
-  const sinPeritoAny = page.locator(
-    'xpath=//*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZÁÉÍÓÚÑ", "abcdefghijklmnopqrstuvwxyzáéíóúñ"), "sin perito asignado")]'
+  // Fallback: marcador exacto de estado sin perito (evita falsos positivos como
+  // "LISTA DE ENCARGOS SIN PERITO ASIGNADO").
+  const explicitUnassigned = page.locator('text=/^\\s*sin\\s+perito\\s+asignado\\s*$/i');
+  {
+    const total = await explicitUnassigned.count();
+    const limit = Math.min(total, 6);
+    for (let i = 0; i < limit; i++) {
+      if (await explicitUnassigned.nth(i).isVisible().catch(() => false)) return false;
+    }
+  }
+
+  // Fallback: evitar los contadores globales de peritos del dashboard.
+  const nonCountersPeritoField = page.locator(
+    `xpath=//*[not(ancestor::*[@id="contadores-peritos"])][self::input][@readonly and contains(translate(@value, "ABCDEFGHIJKLMNOPQRSTUVWXYZÁÉÍÓÚÑ", "abcdefghijklmnopqrstuvwxyzáéíóúñ"), "${normName}")]`
   );
-  if (await sinPeritoAny.count()) return false;
+  if (await nonCountersPeritoField.count()) return true;
 
+  // Fallback conservador: si no hay evidencia clara de "sin perito", tratamos como asignado.
   const nameRe = new RegExp(escapeRegExp(peritoName), 'i');
-  const directInputs = page.locator('input[readonly], input.perito').filter({ hasText: nameRe });
+  const directInputs = page.locator('input[readonly], input.perito, span, div, strong').filter({ hasText: nameRe });
   if (await directInputs.count()) return true;
 
-  const cssEscaped = String(peritoName || '').replace(/["\\]/g, '\\$&');
-  const byValue = page.locator(`input[readonly][value*="${cssEscaped}" i], input.perito[value*="${cssEscaped}" i]`);
-  if (await byValue.count()) return true;
-
-  // Si no encontramos al perito ni el texto "sin perito", damos por desasignado.
-  return false;
+  return true;
 }
 
 async function confirmDeletePeritoModal(page) {
