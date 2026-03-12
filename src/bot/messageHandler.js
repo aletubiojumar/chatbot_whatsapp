@@ -311,7 +311,20 @@ async function processMessage(waId, messageObj) {
     }
 
     // ── Llamada a la IA ──────────────────────────────────────────────────
-    const respuestaIA = await procesarConIA(historial, text, contextoSistema, valoresExcel);
+    const respuestaIAraw = await procesarConIA(historial, text, contextoSistema, valoresExcel);
+    const respuestaIA = (respuestaIAraw && typeof respuestaIAraw === 'object') ? respuestaIAraw : {};
+    if (!respuestaIA.datos_extraidos || typeof respuestaIA.datos_extraidos !== 'object') {
+      respuestaIA.datos_extraidos = {};
+    }
+    const aiMessage = String(respuestaIA?.mensaje_para_usuario || '').trim();
+    if (!aiMessage) {
+      // Evita silencios cuando el modelo devuelve JSON válido pero mensaje vacío.
+      respuestaIA.mensaje_para_usuario = 'Perdón, no he podido procesar bien su mensaje. ¿Puede repetirlo, por favor?';
+      L.warn(`⚠️  IA devolvió mensaje vacío — se envía fallback de recuperación`);
+    } else {
+      // Normalizamos espacios para comparación/almacenado consistente.
+      respuestaIA.mensaje_para_usuario = aiMessage;
+    }
 
     // Persistir mensajes y datos extraídos en el Excel
     if (respuestaIA.mensaje_entendido) {
@@ -421,23 +434,16 @@ async function processMessage(waId, messageObj) {
     // ── Enviar respuesta ─────────────────────────────────────────────────
     const respPreview = (respuestaIA.mensaje_para_usuario || '').slice(0, 80);
     L.log(`🤖 IA [${respuestaIA.datos_extraidos?.estado_expediente || '?'}]: "${respPreview}${respPreview.length < (respuestaIA.mensaje_para_usuario || '').length ? '…' : ''}"`);
-    if (!respuestaIA.mensaje_para_usuario) {
-      L.warn(`⚠️  IA devolvió mensaje vacío — no se envía nada`);
-      conversationManager.recordResponse(waId);
-      return;
-    }
-
     // Anti-duplicado de salida: si el bot acaba de enviar ese mismo texto
-    // en los últimos 60 s, no lo reenvía (evita doble mensaje por doble "si" rápido)
+    // en los últimos 60 s, lo registramos en log pero lo enviamos igualmente
+    // para no dejar la conversación en silencio.
     const RESP_DEDUP_MS = 60 * 1000;
     if (
       lastOutMsg &&
       lastOutMsg.text === respuestaIA.mensaje_para_usuario &&
       Date.now() - new Date(lastOutMsg.timestamp).getTime() < RESP_DEDUP_MS
     ) {
-      L.warn(`⚠️  Respuesta idéntica al mensaje previo (<60s) — omitida para evitar duplicado`);
-      conversationManager.recordResponse(waId);
-      return;
+      L.warn(`⚠️  Respuesta idéntica al mensaje previo (<60s) — se envía igualmente para evitar silencio`);
     }
 
     const result = await adapter.sendText(waId, respuestaIA.mensaje_para_usuario);
