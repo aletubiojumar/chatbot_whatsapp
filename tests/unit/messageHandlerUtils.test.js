@@ -12,6 +12,7 @@ const {
   detectEconomicEstimate,
   normalizeContactPhone,
   isAffirmativeAck,
+  isIdentityRelationPrompt,
   extractRelationship,
 } = _test;
 
@@ -118,6 +119,31 @@ describe('isAffirmativeAck', () => {
 
   test('vacío → false', () => {
     assert.equal(isAffirmativeAck(''), false);
+  });
+});
+
+// ── isIdentityRelationPrompt ──────────────────────────────────────────────────
+
+describe('isIdentityRelationPrompt', () => {
+  test('detecta pregunta típica de relación con entidad del expediente', () => {
+    assert.equal(
+      isIdentityRelationPrompt('Gracias. Para continuar, ¿usted está relacionado con UNION FAM. MALACITANA DE INVER, la entidad indicada en el expediente?'),
+      true
+    );
+  });
+
+  test('detecta variante sobre si es el asegurado', () => {
+    assert.equal(
+      isIdentityRelationPrompt('¿Es usted el asegurado de este expediente?'),
+      true
+    );
+  });
+
+  test('mensaje de daños no es prompt de identidad', () => {
+    assert.equal(
+      isIdentityRelationPrompt('¿Puede indicarme una estimación de los daños?'),
+      false
+    );
   });
 });
 

@@ -50,6 +50,14 @@ function isAffirmativeAck(text) {
   return /^(si|sí|ok|vale|perfecto|correcto|todo ok|todo correcto|de acuerdo|confirmado)$/.test(t);
 }
 
+function isIdentityRelationPrompt(text) {
+  const t = norm(text);
+  return (
+    (t.includes('esta relacionado con') || t.includes('esta relaciado con') || t.includes('es usted') || t.includes('es el asegurado')) &&
+    (t.includes('expediente') || t.includes('entidad indicada') || t.includes('asegurad'))
+  );
+}
+
 function isDefinitiveClosingMessage(text) {
   const t = String(text || '').toLowerCase();
   if (!t) return false;
@@ -249,6 +257,8 @@ async function processMessage(waId, messageObj) {
     const lastBotMessage  = lastOutMsg?.text || '';
     const relationFromCurrent = extractRelationship(text);
     const peritoAttendeeContext = isPeritoAttendeePrompt(lastBotMessage) || isPeritoAttendeeMentionInUser(text);
+    const identityPromptContext = isIdentityRelationPrompt(lastBotMessage);
+    const identityConfirmedNow = identityPromptContext && isAffirmativeAck(text);
     const relationAlreadyKnown = Boolean(
       (!peritoAttendeeContext && relationFromCurrent) ||
       (conversation.relacion && String(conversation.relacion).trim())
@@ -309,6 +319,9 @@ async function processMessage(waId, messageObj) {
     ) {
       contextoSistema += '\n[CONFIRMACIÓN RESUMEN]: El usuario confirma que los datos están correctos. Envía despedida final y marca estado_expediente="finalizado".';
     }
+    if (identityConfirmedNow) {
+      contextoSistema += '\n[CONFIRMACIÓN IDENTIDAD]: El usuario responde afirmativamente a tu pregunta de identidad/relación. Da la identificación por confirmada y avanza al siguiente dato pendiente. PROHIBIDO repetir la misma pregunta de identidad.';
+    }
 
     // ── Llamada a la IA ──────────────────────────────────────────────────
     const respuestaIAraw = await procesarConIA(historial, text, contextoSistema, valoresExcel);
@@ -324,6 +337,15 @@ async function processMessage(waId, messageObj) {
     } else {
       // Normalizamos espacios para comparación/almacenado consistente.
       respuestaIA.mensaje_para_usuario = aiMessage;
+    }
+    if (
+      identityConfirmedNow &&
+      lastOutMsg &&
+      lastOutMsg.text === respuestaIA.mensaje_para_usuario
+    ) {
+      respuestaIA.mensaje_para_usuario = 'Perfecto, gracias. Para continuar, indíqueme por favor su nombre y su relación con la persona asegurada.';
+      respuestaIA.datos_extraidos.estado_expediente = 'identificacion';
+      L.warn(`⚠️  Bucle de identificación detectado tras "sí" del usuario — se fuerza avance de la conversación`);
     }
 
     // Persistir mensajes y datos extraídos en el Excel
@@ -468,6 +490,7 @@ module.exports = {
     detectEconomicEstimate,
     normalizeContactPhone,
     isAffirmativeAck,
+    isIdentityRelationPrompt,
     extractRelationship,
   },
 };
