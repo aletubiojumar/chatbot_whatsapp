@@ -83,6 +83,13 @@ function v(row, ...keys) {
 }
 
 function buildObservacionesEspecialesText(row) {
+  const digital = v(row, 'Digital');
+  const horario = v(row, 'Horario');
+  const isDigital = /^s[ií]$/i.test(digital.trim());
+  const digitalLine = isDigital && horario && horario !== '-'
+    ? `• Digital: Sí (${horario})`
+    : `• Digital: ${digital}`;
+
   const lines = [
     '[CONTACTO CON IA] Resumen completo de la conversación con el asegurado:',
     '',
@@ -92,8 +99,7 @@ function buildObservacionesEspecialesText(row) {
     `• Teléfono: ${v(row, 'Teléfono')}`,
     `• Relación: ${v(row, 'Relación', 'Relacion')}`,
     `• Daños: ${v(row, 'Daños')}`,
-    `• Digital: ${v(row, 'Digital')}`,
-    `• Horario: ${v(row, 'Horario')}`,
+    digitalLine,
     `• AT. Perito: ${v(row, 'AT. Perito', 'ATT. Perito', 'Att. Perito')}`,
   ];
   return lines.join('\n');
@@ -230,7 +236,21 @@ async function openByEncargo(page, encargo) {
   ]);
   if (!opened) throw new Error(`No se encontró botón carpeta para encargo ${encargo}`);
 
-  await page.locator('text=/OBSERVACIONES DEL ENCARGO 01/i').first().waitFor({
+  await page.waitForTimeout(800);
+
+  // Si el encargo se abrió en otra pestaña (p.ej. Docs), volver a la pestaña principal.
+  const obsLabel = page.locator('text=/OBSERVACIONES DEL ENCARGO 01/i').first();
+  const obsVisible = await obsLabel.isVisible().catch(() => false);
+  if (!obsVisible) {
+    await clickFirstExisting([
+      page.locator('ul.nav.nav-tabs li').first().locator('a'),
+      page.locator('.nav-tabs li:first-child a'),
+      page.locator('.nav-tabs a').first(),
+    ]).catch(() => {});
+    await page.waitForTimeout(400);
+  }
+
+  await obsLabel.waitFor({
     state: 'visible',
     timeout: TIMEOUT_MS,
   });
@@ -350,20 +370,10 @@ async function addObservacionesEspeciales(page, text) {
 }
 
 async function isContactoAlreadyMarked(page) {
-  const markedCandidates = [
-    // Clase específica del botón CO en PeritoLine
-    page.locator('button.btn-sin-co.btn-success'),
-    page.locator('button.btn-sin-co[disabled]'),
-    // Fallbacks genéricos
-    page.locator('xpath=//*[normalize-space()="CO"]/following::*[self::a or self::button][contains(@class,"btn-success")][1]'),
-    page.locator('a.btn-success:has-text("C"), button.btn-success:has-text("C")'),
-  ];
-  for (const loc of markedCandidates) {
-    if ((await loc.count()) && (await loc.first().isVisible().catch(() => false))) {
-      return true;
-    }
-  }
-  return false;
+  // Solo consideramos "ya marcado" si el botón CO está deshabilitado (estado definitivo).
+  // Los selectores de btn-success dan falsos positivos en algunos estados del encargo.
+  const loc = page.locator('button.btn-sin-co[disabled], a.btn-sin-co[disabled]');
+  return (await loc.count()) > 0 && (await loc.first().isVisible().catch(() => false));
 }
 
 async function openContactoModal(page, opts = {}) {
