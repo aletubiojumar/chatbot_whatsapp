@@ -19,6 +19,7 @@ const FIELD_TO_COL = {
   danos:              'Daños',
   digital:            'Digital',
   horario:            'Horario',
+  coordenadas:        'Coordenadas',
 };
 
 const TECHNICAL_COL_PREFIX = '_';

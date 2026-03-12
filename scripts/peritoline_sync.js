@@ -90,10 +90,11 @@ function buildObservacionesEspecialesText(row) {
     ? `• Digital: Sí (${horario})`
     : `• Digital: ${digital}`;
 
+  const coordenadas = String(row['Coordenadas'] ?? '').trim();
   const lines = [
     '[CONTACTO CON IA] Resumen completo de la conversación con el asegurado:',
     '',
-    `• Dirección: ${v(row, 'Dirección')}`,
+    `• Dirección: ${v(row, 'Dirección')}${coordenadas ? ` (GPS: ${coordenadas})` : ''}`,
     `• CP: ${v(row, 'CP')}`,
     `• Municipio: ${v(row, 'Municipio')}`,
     `• Teléfono: ${v(row, 'Teléfono')}`,

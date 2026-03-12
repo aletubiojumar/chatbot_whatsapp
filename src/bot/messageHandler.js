@@ -177,23 +177,25 @@ async function processMessage(waId, messageObj) {
   try {
     let text = (messageObj.text || '').trim();
     let locationResolved = false;
+    let locationCoords = null;
 
     // Mensajes de ubicación compartida por WhatsApp
     if (!text && messageObj.type === 'location' && messageObj.location?.latitude) {
       const loc = messageObj.location;
+      locationCoords = `${loc.latitude}, ${loc.longitude}`;
       if (loc.address) {
         // Meta ya trae la dirección (negocio/POI seleccionado del mapa)
-        text = loc.address;
+        text = `${loc.address} (GPS: ${locationCoords})`;
         locationResolved = true;
       } else {
         // Ubicación actual o pin manual: resolver con reverse geocoding
         const geo = await reverseGeocode(loc.latitude, loc.longitude);
         if (geo) {
-          text = geo.address;
+          text = `${geo.address} (GPS: ${locationCoords})`;
           locationResolved = true;
         } else {
           // Fallback: coordenadas en texto para que la IA lo intente gestionar
-          text = `Ubicación GPS: ${loc.latitude}, ${loc.longitude}`;
+          text = `Ubicación GPS: ${locationCoords}`;
           locationResolved = true;
         }
       }
@@ -354,6 +356,7 @@ async function processMessage(waId, messageObj) {
       }
       if (preferencia_horaria === 'mañana') excelUpdates.horario = 'Mañana';
       else if (preferencia_horaria === 'tarde') excelUpdates.horario = 'Tarde';
+      if (locationCoords) excelUpdates.coordenadas = locationCoords;
 
       const nuevoStage = ESTADO_IA_TO_STAGE[estado_expediente];
       if (nuevoStage) {
