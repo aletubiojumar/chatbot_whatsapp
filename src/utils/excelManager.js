@@ -109,8 +109,6 @@ function ensureColumn(ws, headers, colName) {
 
 function ensureAllColumns(ws, headers) {
   for (const [field, colName] of Object.entries(FIELD_TO_COL)) {
-    // "AT. Perito" la crea otro proceso; aquí no forzamos su creación.
-    if (field === 'attPerito') continue;
     headers = ensureColumn(ws, headers, colName);
   }
   return headers;

@@ -32,13 +32,18 @@ function isOverloaded(error) {
   const msg = String(error?.message || '');
   return error?.status === 429 ||
     error?.status === 503 ||
+    error?.status === 404 ||
     msg.includes('429') ||
     msg.includes('503') ||
+    msg.includes('404') ||
     msg.includes('RESOURCE_EXHAUSTED') ||
     msg.includes('overloaded') ||
     msg.includes('high demand') ||
     msg.includes('Service Unavailable') ||
-    msg.includes('UNAVAILABLE');
+    msg.includes('UNAVAILABLE') ||
+    msg.includes('not found') ||
+    msg.includes('no longer available') ||
+    msg.includes('is not supported');
 }
 
 function tryNextModel() {

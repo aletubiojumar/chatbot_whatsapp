@@ -60,6 +60,20 @@ app.get('/webhook', (req, res) => {
   }
 });
 
+// ── Cola de procesamiento por usuario (evita respuestas duplicadas) ──────────
+// Garantiza que los mensajes de un mismo usuario se procesen de forma secuencial.
+
+const _userQueues = new Map();
+
+function enqueueForUser(userId, fn) {
+  const previous = _userQueues.get(userId) || Promise.resolve();
+  const next = previous.then(fn).catch(() => {});
+  _userQueues.set(userId, next);
+  next.then(() => {
+    if (_userQueues.get(userId) === next) _userQueues.delete(userId);
+  });
+}
+
 // ── Recepción de eventos (POST) ───────────────────────────────────────────
 
 app.post('/webhook', async (req, res) => {
@@ -105,11 +119,13 @@ app.post('/webhook', async (req, res) => {
     : `"${msg.text.slice(0, 60)}${msg.text.length > 60 ? '[…]' : ''}"`;
   log.info(`📥 Recibido de [${log.maskPhone(msg.userId)}]: ${logPreview}`);;
 
-  try {
-    await processMessage(msg.userId, msg);
-  } catch (err) {
-    log.error('❌ Error procesando mensaje:', err);
-  }
+  enqueueForUser(msg.userId, async () => {
+    try {
+      await processMessage(msg.userId, msg);
+    } catch (err) {
+      log.error('❌ Error procesando mensaje:', err);
+    }
+  });
 });
 
 // ── Arranque ──────────────────────────────────────────────────────────────

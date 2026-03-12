@@ -245,7 +245,8 @@ async function processMessage(waId, messageObj) {
     // Leer datos del siniestro y mensajes desde Excel
     const userData        = conversation.userData || {};
     const mensajesPrevios = conversationManager.getMensajes(waId);
-    const lastBotMessage = [...mensajesPrevios].reverse().find(m => m?.direction === 'out')?.text || '';
+    const lastOutMsg      = [...mensajesPrevios].reverse().find(m => m?.direction === 'out') || null;
+    const lastBotMessage  = lastOutMsg?.text || '';
     const relationFromCurrent = extractRelationship(text);
     const peritoAttendeeContext = isPeritoAttendeePrompt(lastBotMessage) || isPeritoAttendeeMentionInUser(text);
     const relationAlreadyKnown = Boolean(
@@ -337,9 +338,18 @@ async function processMessage(waId, messageObj) {
         excelUpdates.relacion = relacionInterlocutor;
       }
 
-      const shouldUpdateAttPerito = peritoAttendeeContext && Boolean(nombre_contacto || relacion_contacto || relationFromCurrent || telefono_contacto);
+      // Actualizar AT. Perito:
+      // - Si el bot preguntó explícitamente por el asistente al perito → siempre actualizar.
+      // - Si no (peritoAttendeeContext=false) → guardar el nombre del interlocutor como
+      //   valor inicial de AT. Perito, pero SOLO si aún no hay ninguno registrado.
+      //   Así el nombre se captura aunque la conversación no llegue a la fase de agendado.
+      const attPeritoActual = String(conversation.attPerito || '').trim();
+      const attPeritoVacio  = !attPeritoActual || attPeritoActual.startsWith('sin indicar');
+      const shouldUpdateAttPerito =
+        (peritoAttendeeContext && Boolean(nombre_contacto || relacion_contacto || relationFromCurrent || telefono_contacto)) ||
+        (!peritoAttendeeContext && attPeritoVacio && Boolean(nombre_contacto));
       if (shouldUpdateAttPerito) {
-        const [exNombre = '', exRelacion = '', exTelefono = ''] = String(conversation.attPerito || '').split(' - ');
+        const [exNombre = '', exRelacion = '', exTelefono = ''] = attPeritoActual.split(' - ');
         const nombreAtt = String(nombre_contacto || '').trim() || (exNombre !== 'sin indicar' ? exNombre : '') || 'sin indicar';
         const relacionAtt = String(relacion_contacto || relationFromCurrent || '').trim() || (exRelacion !== 'sin indicar' ? exRelacion : '') || 'sin indicar';
         const telefonoAtt = normalizeContactPhone(telefono_contacto) || normalizeContactPhone(exTelefono) || normalizeContactPhone(waId);
@@ -416,6 +426,20 @@ async function processMessage(waId, messageObj) {
       conversationManager.recordResponse(waId);
       return;
     }
+
+    // Anti-duplicado de salida: si el bot acaba de enviar ese mismo texto
+    // en los últimos 60 s, no lo reenvía (evita doble mensaje por doble "si" rápido)
+    const RESP_DEDUP_MS = 60 * 1000;
+    if (
+      lastOutMsg &&
+      lastOutMsg.text === respuestaIA.mensaje_para_usuario &&
+      Date.now() - new Date(lastOutMsg.timestamp).getTime() < RESP_DEDUP_MS
+    ) {
+      L.warn(`⚠️  Respuesta idéntica al mensaje previo (<60s) — omitida para evitar duplicado`);
+      conversationManager.recordResponse(waId);
+      return;
+    }
+
     const result = await adapter.sendText(waId, respuestaIA.mensaje_para_usuario);
     L.log(`✅ Enviado (msgId: ${result?.messageId}) | entendido=${respuestaIA.mensaje_entendido}`);
 
