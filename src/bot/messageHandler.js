@@ -244,6 +244,12 @@ async function processMessage(waId, messageObj) {
           conversationManager.createOrUpdateConversation(waId, { stage: 'cerrado' });
         }
       }
+      // Guardar coordenadas aunque la conversación esté cerrada y sincronizar PeritoLine
+      if (locationCoords) {
+        conversationManager.createOrUpdateConversation(waId, { coordenadas: locationCoords });
+        triggerEncargoSync(nexp, 'coordenadas_tardias', '', false, true);
+        L.log(`📍 Coordenadas recibidas en stage terminal, guardadas y sync disparado: ${locationCoords}`);
+      }
       return;
     }
 

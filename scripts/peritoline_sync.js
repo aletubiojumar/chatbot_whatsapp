@@ -144,9 +144,10 @@ function buildObservacionesEspecialesText(row) {
   const lines = [
     '[CONTACTO CON IA] Resumen completo de la conversación con el asegurado:',
     '',
-    `• Dirección: ${v(row, 'Dirección')}${coordenadas ? ` (GPS: ${coordenadas})` : ''}`,
+    `• Dirección: ${v(row, 'Dirección')}`,
     `• CP: ${v(row, 'CP')}`,
     `• Municipio: ${v(row, 'Municipio')}`,
+    `• Coordenadas GPS: ${coordenadas || '-'}`,
     `• Teléfono: ${telefonoContacto}`,
     relacionLine,
     `• Daños: ${v(row, 'Daños')}`,
