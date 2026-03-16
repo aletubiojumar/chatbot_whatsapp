@@ -376,16 +376,11 @@ function buildSafeEscalationResponse() {
   };
 }
 
-async function procesarConIA(historial, mensajeUsuario, contextoExtra, valoresExcel) {
-  await initIA();
-
+async function tryGeminiWithFallbacks({ validHistory, promptFinal, contextoExtra, mensajeUsuario }) {
   const JSON_RETRIES_PER_MODEL = Math.max(
     0,
     Number(process.env.GEMINI_JSON_RETRIES_PER_MODEL || 1)
   );
-
-  const promptFinal = buildPromptFinal(valoresExcel);
-  const validHistory = normalizeHistory(historial);
 
   const models = getModelList();
   const jsonRetriesByModel = new Map();
@@ -395,13 +390,7 @@ async function procesarConIA(historial, mensajeUsuario, contextoExtra, valoresEx
     const modelName = currentModel();
 
     try {
-      const result = await callGemini({
-        validHistory,
-        promptFinal,
-        contextoExtra,
-        mensajeUsuario,
-      });
-
+      const result = await callGemini({ validHistory, promptFinal, contextoExtra, mensajeUsuario });
       console.log(`✅ Respuesta OK desde ${result.provider}:${result.model}`);
       return result.data;
     } catch (error) {
@@ -413,7 +402,6 @@ async function procesarConIA(historial, mensajeUsuario, contextoExtra, valoresEx
           console.warn(`⚠️ JSON inválido en ${modelName} (${error.message}). Reintento ${usedRetries + 1}/${JSON_RETRIES_PER_MODEL}.`);
           continue;
         }
-
         console.warn(`⚠️ JSON inválido persistente en ${modelName}. Probando siguiente modelo.`);
         if (!tryNextModel('JSON inválido persistente')) break;
         continue;
@@ -444,16 +432,45 @@ async function procesarConIA(historial, mensajeUsuario, contextoExtra, valoresEx
     }
   }
 
+  return null; // todos los modelos Gemini fallaron
+}
+
+async function procesarConIA(historial, mensajeUsuario, contextoExtra, valoresExcel) {
+  await initIA();
+
+  const platform = String(process.env.AI_USING_PLATFORM || 'both').toLowerCase();
+  const promptFinal = buildPromptFinal(valoresExcel);
+  const validHistory = normalizeHistory(historial);
+  const callArgs = { validHistory, promptFinal, contextoExtra, mensajeUsuario };
+
+  if (platform === 'gemini') {
+    console.log('🔧 [AI_PLATFORM] Usando solo Gemini');
+    const data = await tryGeminiWithFallbacks(callArgs);
+    if (data) return data;
+    console.error('❌ Todos los modelos Gemini fallaron. Escalando.');
+    return buildSafeEscalationResponse();
+  }
+
+  if (platform === 'openai') {
+    console.log('🔧 [AI_PLATFORM] Usando solo OpenAI');
+    try {
+      const result = await callOpenAI(callArgs);
+      console.log(`✅ Respuesta OK desde ${result.provider}:${result.model}`);
+      return result.data;
+    } catch (error) {
+      console.error(`❌ OpenAI falló: ${error.message}. Escalando.`);
+      return buildSafeEscalationResponse();
+    }
+  }
+
+  // both (default)
+  console.log('🔧 [AI_PLATFORM] Usando Gemini con fallback a OpenAI');
+  const geminiData = await tryGeminiWithFallbacks(callArgs);
+  if (geminiData) return geminiData;
+
   console.warn('⚠️ Todos los Gemini fallaron. Intentando fallback OpenAI...');
-
   try {
-    const result = await callOpenAI({
-      validHistory,
-      promptFinal,
-      contextoExtra,
-      mensajeUsuario,
-    });
-
+    const result = await callOpenAI(callArgs);
     console.log(`✅ Fallback OK desde ${result.provider}:${result.model}`);
     return result.data;
   } catch (error) {
