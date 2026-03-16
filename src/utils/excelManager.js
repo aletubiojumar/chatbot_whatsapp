@@ -11,6 +11,39 @@ const BUSINESS_HOURS_END   = Number(process.env.BUSINESS_HOURS_END    || 20);
 const CLEANUP_DAYS         = Number(process.env.SINIESTRO_CLEANUP_DAYS || 7);
 const STATE_SHEET_NAME     = process.env.CONV_STATE_SHEET || '__bot_state';
 
+// ── Lock de escritura cross-proceso ──────────────────────────────────────────
+const LOCK_PATH     = `${EXCEL_PATH}.lock`;
+const LOCK_STALE_MS = 15_000; // si el lock tiene más de 15s, se considera muerto
+
+function acquireLock() {
+  const deadline = Date.now() + 5000; // máximo 5s esperando
+  while (Date.now() < deadline) {
+    try {
+      fs.writeFileSync(LOCK_PATH, String(process.pid), { flag: 'wx' }); // creación exclusiva atómica
+      return;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      // ¿Lock obsoleto?
+      try {
+        const stat = fs.statSync(LOCK_PATH);
+        if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
+          fs.unlinkSync(LOCK_PATH);
+          continue;
+        }
+      } catch { /* ya lo eliminó otro proceso */ }
+      // Pausa corta antes de reintentar
+      const wait = Date.now() + 20;
+      while (Date.now() < wait) {}
+    }
+  }
+  console.warn('⚠️  Excel lock timeout, liberando forzosamente');
+  releaseLock();
+}
+
+function releaseLock() {
+  try { fs.unlinkSync(LOCK_PATH); } catch {}
+}
+
 // Mapeo campo lógico → nombre columna Excel (solo negocio visible)
 const FIELD_TO_COL = {
   contacto:           'Contacto',
@@ -643,6 +676,79 @@ function cleanOldRows() {
   }
 }
 
+/**
+ * Aplica techPatch (hoja __bot_state) y excelPatch (hoja principal) en un único
+ * ciclo lectura→modificación→guardado protegido por lockfile.
+ * Usar siempre este método en lugar de llamar a upsertStateInExcel +
+ * updateConversationExcel por separado para evitar escrituras concurrentes.
+ */
+function applyPatches(waId, techPatch = {}, excelPatch = {}) {
+  acquireLock();
+  try {
+    const wb = readWorkbook();
+
+    // ── Patch hoja __bot_state ────────────────────────────────────────────────
+    const stateWs      = getOrCreateStateSheet(wb);
+    let   stateHeaders = getStateHeaders(stateWs);
+    stateHeaders       = ensureStateColumns(stateWs, stateHeaders);
+
+    let stateRow = findStateRowByWaId(stateWs, stateHeaders, waId);
+    if (stateRow === -1) stateRow = appendSheetRow(stateWs);
+
+    const prev = rowToState(stateWs, stateHeaders, stateRow) || { waId: String(waId) };
+    const next = { ...prev, ...techPatch, waId: String(waId) };
+    next.status = next.stage === 'escalated' ? 'escalated' : 'pending';
+
+    setCellValue(stateWs, stateRow, stateHeaders[STATE_FIELDS.waId],   next.waId);
+    setCellValue(stateWs, stateRow, stateHeaders[STATE_FIELDS.status],  String(next.status  || 'pending'));
+    setCellValue(stateWs, stateRow, stateHeaders[STATE_FIELDS.stage],   String(next.stage   || 'consent'));
+
+    const numericStateFields = [
+      STATE_FIELDS.attempts,
+      STATE_FIELDS.inactivityAttempts,
+      STATE_FIELDS.nextReminderAt,
+      STATE_FIELDS.lastUserMessageAt,
+      STATE_FIELDS.lastReminderAt,
+      STATE_FIELDS.lastMessageAt,
+    ];
+    for (const fieldName of numericStateFields) {
+      const value = next[fieldName];
+      const c     = stateHeaders[fieldName];
+      if (value === null || value === undefined || value === '') setCellValue(stateWs, stateRow, c, '');
+      else setCellNumber(stateWs, stateRow, c, Number(value));
+    }
+
+    const mensajes = Array.isArray(next.mensajes) ? next.mensajes : [];
+    setCellValue(stateWs, stateRow, stateHeaders[STATE_FIELDS.mensajes], JSON.stringify(mensajes));
+
+    // ── Patch hoja principal ──────────────────────────────────────────────────
+    if (Object.keys(excelPatch).length) {
+      const mainWs      = wb.Sheets[wb.SheetNames[0]];
+      let   mainHeaders = getHeaders(mainWs);
+      mainHeaders       = ensureAllColumns(mainWs, mainHeaders);
+
+      const mainRow = findRowByPhone(mainWs, mainHeaders, waId);
+      if (mainRow === -1) {
+        console.warn(`⚠️  Excel: waId=${waId} no encontrado para actualizar`);
+      } else {
+        for (const [field, colName] of Object.entries(FIELD_TO_COL)) {
+          if (!(field in excelPatch)) continue;
+          const c     = mainHeaders[colName];
+          if (c === undefined) continue;
+          const value = excelPatch[field];
+          if (value === null)              setCellValue(mainWs, mainRow, c, '');
+          else if (typeof value === 'number') setCellNumber(mainWs, mainRow, c, value);
+          else                               setCellValue(mainWs, mainRow, c, String(value));
+        }
+      }
+    }
+
+    saveWorkbook(wb);
+  } finally {
+    releaseLock();
+  }
+}
+
 module.exports = {
   isBusinessHours,
   normalizePhone,
@@ -656,4 +762,5 @@ module.exports = {
   readConversationByNexp,
   readAllConversations,
   updateConversationExcel,
+  applyPatches,
 };

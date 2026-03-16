@@ -10,6 +10,7 @@ const {
   readAllStatesFromExcel,
   upsertStateInExcel,
   updateConversationExcel,
+  applyPatches,
 } = require('../utils/excelManager');
 
 const INACTIVITY_MS = Number(
@@ -102,16 +103,8 @@ function createOrUpdateConversation(waId, data = {}) {
     if (EXCEL_FIELDS.has(k)) excelPatch[k] = v;
   }
 
-  if (Object.keys(techPatch).length) {
-    upsertStateInExcel(key, techPatch);
-  } else {
-    // Garantiza existencia de estado básico al inicializar conversación.
-    upsertStateInExcel(key, {});
-  }
-
-  if (Object.keys(excelPatch).length) {
-    updateConversationExcel(key, excelPatch);
-  }
+  // Una sola apertura del Excel → aplica ambos patches → un solo guardado con lock.
+  applyPatches(key, techPatch, excelPatch);
 
   return getConversation(key);
 }
