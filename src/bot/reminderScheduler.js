@@ -27,6 +27,7 @@ const { triggerEncargoSync } = require('./peritolineAutoSync');
 const { isBusinessHours, cleanOldRows } = require('../utils/excelManager');
 const { procesarConIA }   = require('../ai/aiModel');
 const { generateConversationPdf, cleanOldPdfs, cleanOldDebugLogs } = require('../utils/pdfGenerator');
+const fileLogger          = require('../utils/fileLogger');
 
 const CHECK_MINUTES         = Number(process.env.SCHEDULER_CHECK_MINUTES          || 15);
 const INITIAL_RETRY_MINUTES = Number(process.env.INITIAL_RETRY_INTERVAL_MINUTES   || process.env.INITIAL_RETRY_INTERVAL_HOURS * 60 || 360);
@@ -143,6 +144,7 @@ async function handleInitialRetry(conv, now) {
     console.log(`✅ Reintento inicial enviado (${siguiente}/${INITIAL_MAX_ATTEMPTS})`);
   } catch (err) {
     console.error(`❌ Error en reintento inicial ${waId}:`, err.message);
+    fileLogger.writeLog(nexp, 'ERROR', `Error en reintento inicial waId=${waId}: ${err.message}`);
   }
 }
 
@@ -200,6 +202,7 @@ async function handleInactivity(conv, now) {
     }
   } catch (err) {
     console.error(`❌ Error enviando inactividad ${waId}:`, err.message);
+    fileLogger.writeLog(nexp, 'ERROR', `Error enviando inactividad waId=${waId}: ${err.message}`);
   }
 }
 
@@ -241,9 +244,13 @@ async function finalizar(waId, nexp, anotacion = '') {
       danos:     conv?.danos,
       digital:   conv?.digital,
       horario:   conv?.horario,
-    }).catch(e => console.error(`❌ Error generando PDF nexp=${nexp}:`, e.message));
+    }).catch(e => {
+      console.error(`❌ Error generando PDF nexp=${nexp}:`, e.message);
+      fileLogger.writeLog(nexp, 'ERROR', `Error generando PDF: ${e.message}`);
+    });
   } catch (err) {
     console.error(`❌ Error finalizando por inactividad ${waId}:`, err.message);
+    fileLogger.writeLog(nexp, 'ERROR', `Error finalizando por inactividad waId=${waId}: ${err.message}`);
   }
 }
 

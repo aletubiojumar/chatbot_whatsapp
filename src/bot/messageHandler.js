@@ -5,6 +5,7 @@ const adapter             = require('../channels/whatsappAdapter');
 const { canProcess }      = require('./stateMachine');
 const { triggerEncargoSync } = require('./peritolineAutoSync');
 const { generateConversationPdf } = require('../utils/pdfGenerator');
+const fileLogger          = require('../utils/fileLogger');
 const axios = require('axios');
 
 // Mapeo entre los valores que devuelve la IA y los stages internos
@@ -223,10 +224,11 @@ async function processMessage(waId, messageObj) {
     }
 
     // ── Logger contextual (prefija [nexp] en cada línea) ─────────────────
+    const FL = fileLogger.forNexp(nexp);
     const L = {
       log:  (...a) => console.log( `[${nexp}]`, ...a),
-      warn: (...a) => console.warn(`[${nexp}]`, ...a),
-      err:  (...a) => console.error(`[${nexp}]`, ...a),
+      warn: (...a) => { console.warn(`[${nexp}]`, ...a); FL.warn(a.map(String).join(' ')); },
+      err:  (...a) => { console.error(`[${nexp}]`, ...a); FL.error(a.map(String).join(' ')); },
     };
     const msgPreview = text.length > 70 ? `${text.slice(0, 70)}…` : text;
     console.log(`\n${'─'.repeat(65)}`);
@@ -461,7 +463,10 @@ async function processMessage(waId, messageObj) {
         };
 
         generateConversationPdf(nexp, userData, allMsgs, pdfExtra)
-          .catch(e => console.error(`❌ Error generando PDF nexp=${nexp}:`, e.message));
+          .catch(e => {
+            console.error(`❌ Error generando PDF nexp=${nexp}:`, e.message);
+            FL.error(`Error generando PDF: ${e.message}`);
+          });
 
         // PDF traducido al español si la conversación fue en otro idioma
         const idioma = excelUpdates.idioma || conversation.idioma;
@@ -472,7 +477,10 @@ async function processMessage(waId, messageObj) {
               filename: `conversation_${nexp}_español.pdf`,
               translatedFrom: idioma,
             }))
-            .catch(e => console.error(`❌ Error generando PDF traducido nexp=${nexp}:`, e.message));
+            .catch(e => {
+              console.error(`❌ Error generando PDF traducido nexp=${nexp}:`, e.message);
+              FL.error(`Error generando PDF traducido: ${e.message}`);
+            });
         }
       }
     }
@@ -503,6 +511,7 @@ async function processMessage(waId, messageObj) {
   } catch (error) {
     const nexpCtx = conversationManager.getNexpByWaId(waId) || waId;
     console.error(`[${nexpCtx}] ❌ Error crítico en processMessage:`, error);
+    fileLogger.writeLog(nexpCtx, 'ERROR', `Error crítico en processMessage: ${error?.stack || error?.message || error}`);
   }
 }
 

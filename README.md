@@ -16,11 +16,12 @@ Chatbot conversacional para la gestión de siniestros de seguros. Contacta con l
 8. [Almacenamiento de datos](#almacenamiento-de-datos)
 9. [PDF de transcripción](#pdf-de-transcripción)
 10. [Sincronización con PeritoLine](#sincronización-con-peritoline)
-11. [Limpieza automática de datos](#limpieza-automática-de-datos)
-12. [Tests](#tests)
-13. [Estructura del proyecto](#estructura-del-proyecto)
-14. [Seguridad implementada](#seguridad-implementada)
-15. [Endpoints HTTP](#endpoints-http)
+11. [Sistema de logs por expediente](#sistema-de-logs-por-expediente)
+12. [Limpieza automática de datos](#limpieza-automática-de-datos)
+13. [Tests](#tests)
+14. [Estructura del proyecto](#estructura-del-proyecto)
+15. [Seguridad implementada](#seguridad-implementada)
+16. [Endpoints HTTP](#endpoints-http)
 
 ---
 
@@ -245,6 +246,8 @@ Cada mensaje procesado imprime un separador con el número de expediente para fa
 [880337292] ✅ Enviado (msgId: wamid.xxx) | entendido=true
 ```
 
+Los errores y advertencias también se persisten en archivo — ver [Sistema de logs por expediente](#sistema-de-logs-por-expediente).
+
 ### Respuesta estructurada de la IA
 
 Gemini devuelve siempre un objeto JSON con este esquema:
@@ -389,6 +392,46 @@ npm run peritoline:sync -- --encargo 880337292 --anotacion "[IA] Digital: Sí"
 
 ---
 
+## Sistema de logs por expediente
+
+Además del log de consola (PII-safe), el bot persiste errores e incidencias en archivos organizados por número de expediente (`nexp`).
+
+### Estructura de directorios
+
+```
+logs/
+  [nexp]/
+    bot.log              ← errores e incidencias del bot (INFO / WARN / ERROR)
+    playwright/
+      peritoline.log     ← salida completa del proceso playwright para este encargo
+```
+
+Cada directorio `[nexp]` se crea automáticamente la primera vez que se registra un evento para ese expediente.
+
+### Qué se registra
+
+| Archivo | Origen | Contenido |
+|---|---|---|
+| `[nexp]/bot.log` | `messageHandler.js` | Errores críticos en el procesamiento del mensaje, warnings de la IA (mensaje vacío, bucles), fallos al generar PDF |
+| `[nexp]/bot.log` | `reminderScheduler.js` | Errores en reenvíos del template inicial, mensajes de inactividad y cierre por inactividad |
+| `[nexp]/playwright/peritoline.log` | `peritolineAutoSync.js` | Toda la salida (stdout + stderr) del proceso Playwright: login, navegación, acciones en PeritoLine, errores |
+
+### Formato de entrada
+
+```
+2026-03-18T09:01:31.952Z [ERROR] Error crítico en processMessage: Cannot read ...
+2026-03-18T09:05:12.001Z [WARN]  IA devolvió mensaje vacío — se envía fallback
+2026-03-18T09:10:00.000Z === Sync iniciado | encargo=880337292 | motivo=primera_respuesta ===
+2026-03-18T09:10:03.210Z ✅ Perito virtual asignado correctamente
+2026-03-18T09:10:05.500Z === Sync finalizado OK | encargo=880337292 ===
+```
+
+### Limpieza automática
+
+Las carpetas de log se eliminan cuando la **fecha de creación** del directorio supera `MAX_AGE_DAYS` (7 días), lo que coincide con el ciclo de vida del expediente. La limpieza se ejecuta al arrancar el servidor y después cada semana (ver [Limpieza automática de datos](#limpieza-automática-de-datos)).
+
+---
+
 ## Limpieza automática de datos
 
 El scheduler ejecuta las tareas de limpieza en cada ciclo, sin restricción horaria:
@@ -398,6 +441,7 @@ El scheduler ejecuta las tareas de limpieza en cada ciclo, sin restricción hora
 | Eliminar filas del Excel | Filas con `Fecha Encargo` anterior a N días | `SINIESTRO_CLEANUP_DAYS` (7) |
 | Eliminar PDFs | Archivos en `docs/conversations/` con más de N días | `PDF_CLEANUP_DAYS` (7) |
 | Eliminar logs de debug | Archivos `debug_*.png` / `debug_*.html` en `logs/` con más de N días | `SINIESTRO_CLEANUP_DAYS` (7) |
+| Eliminar carpetas de log `[nexp]` | Directorios en `logs/` cuya **fecha de creación** supere 7 días | fijo (7 días) |
 
 Las filas eliminadas del Excel se loguean con su nexp. Una vez eliminada una fila, ese número de expediente ya no será procesado por el bot.
 
@@ -429,7 +473,8 @@ chatbot_ia/
 │   ├── channels/
 │   │   └── whatsappAdapter.js       # Adaptador Meta Cloud API
 │   ├── utils/
-│   │   ├── logger.js                # Logging seguro sin PII
+│   │   ├── logger.js                # Logging seguro sin PII (consola)
+│   │   ├── fileLogger.js            # Logging en archivos por expediente (logs/[nexp]/)
 │   │   ├── atomicWrite.js           # Escritura atómica JSON + permisos
 │   │   ├── excelManager.js          # I/O del Excel (negocio + estado técnico)
 │   │   └── pdfGenerator.js          # Generación de PDFs + limpieza de debug logs
@@ -458,7 +503,11 @@ chatbot_ia/
 │   ├── peritoline_sync.js           # Script de sincronización con PeritoLine (Playwright)
 │   └── ngrok_webhook.sh             # Helper para desarrollo con ngrok
 ├── logs/
-│   └── debug_*.png / debug_*.html   # Snapshots de debug (eliminados automáticamente)
+│   ├── [nexp]/
+│   │   ├── bot.log                  # Errores e incidencias del bot para este encargo
+│   │   └── playwright/
+│   │       └── peritoline.log       # Salida del proceso playwright para este encargo
+│   └── debug_*.png / debug_*.html   # Snapshots de debug playwright (eliminados automáticamente)
 ├── tests/
 │   └── unit/                        # Tests unitarios (node:test)
 └── package.json

@@ -9,6 +9,7 @@ const XLSX = require('xlsx');
 const { sendInitialTemplate, buildSaludoByHour, buildInitialTemplateText } = require('./bot/templateSender');
 const conversationManager = require('./bot/conversationManager');
 const { triggerEncargoSync } = require('./bot/peritolineAutoSync');
+const { readAllStatesFromExcel } = require('./utils/excelManager');
 const log = require('./utils/logger');
 
 // ── Configuración ─────────────────────────────────────────────────────────
@@ -78,6 +79,7 @@ function readExcel(filePath) {
     telefono:       normalizePhone(row['Telefono'] || row['Teléfono']),
     estado:         String(row['Estado']          || '').trim().toUpperCase(),
     peritovirtual:  String(row['Peritovirtual'] || row['peritovirtual'] || row['PeritorVirtual'] || '').trim().toLowerCase(),
+    contacto:       String(row['Contacto']        || '').trim(),
   }));
 }
 
@@ -102,6 +104,14 @@ async function sendInitialMessages(opts = {}) {
   console.log('╚════════════════════════════════════════════════════════════╝\n');
 
   if (dryRun) console.log('⚠️  MODO DRY-RUN: no se enviarán mensajes reales\n');
+
+  // Cargar waIds con conversación activa para no resetear estados en curso
+  const existingWaIds = new Set(
+    readAllStatesFromExcel().map(s => String(s.waId))
+  );
+  if (existingWaIds.size > 0) {
+    console.log(`🔒 Conversaciones activas en __bot_state: ${existingWaIds.size} (se omitirán)\n`);
+  }
 
   let filas;
   try {
@@ -132,6 +142,20 @@ async function sendInitialMessages(opts = {}) {
       .trim()
       .slice(0, 60);
     const waId = telefono;
+
+    // Saltar filas cuyo waId ya tiene conversación activa en __bot_state
+    if (waId && existingWaIds.has(waId)) {
+      console.log(`🔒 Fila ${fila.rowIndex} omitida — conversación ya activa (__bot_state) | nexp=${nexp}`);
+      resultados.omitidos++;
+      continue;
+    }
+
+    // Saltar filas cuyo campo Contacto ya está establecido (mensaje inicial ya enviado)
+    if (fila.contacto !== '') {
+      console.log(`🔒 Fila ${fila.rowIndex} omitida — ya contactado (Contacto="${fila.contacto}") | nexp=${nexp}`);
+      resultados.omitidos++;
+      continue;
+    }
 
     // Saltar filas cuyo estado no sea el esperado
     if (fila.estado !== ESTADO_PENDIENTE) {

@@ -4,6 +4,7 @@
 const path = require('path');
 const { spawn } = require('child_process');
 const log = require('../utils/logger');
+const fileLogger = require('../utils/fileLogger');
 
 const AUTO_SYNC_ENABLED = !/^(0|false|no)$/i.test(String(process.env.PERITOLINE_AUTO_SYNC || 'true'));
 const AUTO_SYNC_COOLDOWN_MS = Number(process.env.PERITOLINE_AUTO_SYNC_COOLDOWN_MS || 45000);
@@ -23,6 +24,8 @@ function _spawn(key, reason, anotacion, assignOnly, isFinalSync) {
   if (anotacion)    spawnArgs.push('--anotacion', anotacion);
   if (assignOnly)   spawnArgs.push('--assign-only');
   if (isFinalSync)  spawnArgs.push('--final-sync');
+  const FL = fileLogger.forNexp(key);
+
   const child = spawn(process.execPath, spawnArgs, {
     cwd,
     env: {
@@ -31,14 +34,30 @@ function _spawn(key, reason, anotacion, assignOnly, isFinalSync) {
       PLAYWRIGHT_SLOW_MO: String(process.env.PERITOLINE_AUTO_SYNC_SLOW_MO || '0'),
       PERITOLINE_DRY_RUN: String(process.env.PERITOLINE_AUTO_SYNC_DRY_RUN || 'false'),
     },
-    stdio: 'inherit',
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
 
+  const syncHeader = `=== Sync iniciado | encargo=${key}${reason ? ` | motivo=${reason}` : ''} ===`;
   log.info(`🚀 PeritoLine auto-sync lanzado | encargo=${key}${reason ? ` | motivo=${reason}` : ''}`);
+  FL.playwright(syncHeader);
+
+  child.stdout.on('data', (chunk) => {
+    const text = chunk.toString();
+    process.stdout.write(chunk);
+    text.split('\n').filter(l => l.trim()).forEach(l => FL.playwright(l));
+  });
+
+  child.stderr.on('data', (chunk) => {
+    const text = chunk.toString();
+    process.stderr.write(chunk);
+    text.split('\n').filter(l => l.trim()).forEach(l => FL.playwright(`[STDERR] ${l}`));
+  });
 
   child.on('error', (err) => {
     running.delete(key);
     log.error(`❌ Error lanzando PeritoLine auto-sync | encargo=${key}:`, err.message);
+    FL.playwright(`[ERROR] Error lanzando proceso: ${err.message}`);
+    FL.error(`Error lanzando PeritoLine auto-sync: ${err.message}`);
     _drainPending(key);
   });
 
@@ -46,8 +65,11 @@ function _spawn(key, reason, anotacion, assignOnly, isFinalSync) {
     running.delete(key);
     if (code === 0) {
       log.info(`✅ PeritoLine auto-sync finalizado | encargo=${key}`);
+      FL.playwright(`=== Sync finalizado OK | encargo=${key} ===`);
     } else {
       log.error(`❌ PeritoLine auto-sync terminó con error | encargo=${key} | code=${code}`);
+      FL.playwright(`[ERROR] Sync terminó con código ${code} | encargo=${key}`);
+      FL.error(`PeritoLine auto-sync terminó con error | code=${code}`);
     }
     _drainPending(key);
   });

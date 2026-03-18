@@ -10,6 +10,7 @@ const { checkLimit } = require('./rateLimiter');
 const { markAsRead } = require('./sendMessage');
 const log = require('../utils/logger');
 const { startScheduler } = require('./reminderScheduler');
+const { cleanOldLogs } = require('../utils/fileLogger');
 
 const app = express();
 app.use(bodyParser.json());
@@ -139,6 +140,9 @@ const server = app.listen(PORT, HOST, () => {
   console.log(`📱 Phone Number ID: ${process.env.PHONE_NUMBER_ID}`);
   console.log(`🔑 Token configurado: ${Boolean(process.env.USER_ACCESS_TOKEN)}\n`);
   startScheduler();
+  // Limpieza de logs al arrancar y después cada semana
+  cleanOldLogs();
+  setInterval(cleanOldLogs, 7 * 24 * 60 * 60 * 1000).unref();
 });
 
 server.on('error', (err) => log.error('❌ Error del servidor HTTP:', err.message));
