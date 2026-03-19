@@ -11,6 +11,8 @@ const { markAsRead } = require('./sendMessage');
 const log = require('../utils/logger');
 const { startScheduler } = require('./reminderScheduler');
 const { cleanOldLogs } = require('../utils/fileLogger');
+const resourceMonitor = require('../utils/resourceMonitor');
+const { getQueueStatus } = require('./peritolineAutoSync');
 
 const app = express();
 app.use(bodyParser.json());
@@ -32,6 +34,7 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', (req, res) => {
+  const lastRes = resourceMonitor.getLastStats();
   res.json({
     status: 'healthy',
     gemini: {
@@ -42,6 +45,15 @@ app.get('/health', (req, res) => {
       phoneNumberId: process.env.PHONE_NUMBER_ID,
       token: Boolean(process.env.USER_ACCESS_TOKEN),
     },
+    resources: lastRes ? {
+      cpuPct:      lastRes.cpuPct,
+      ramFreeMB:   lastRes.mem.freeMB,
+      ramTotalMB:  lastRes.mem.totalMB,
+      ramFreePercent: lastRes.mem.freePercent,
+      available:   lastRes.available,
+      sampledAt:   new Date(lastRes.ts).toISOString(),
+    } : null,
+    peritolineQueue: getQueueStatus(),
   });
 });
 
@@ -140,6 +152,7 @@ const server = app.listen(PORT, HOST, () => {
   console.log(`📱 Phone Number ID: ${process.env.PHONE_NUMBER_ID}`);
   console.log(`🔑 Token configurado: ${Boolean(process.env.USER_ACCESS_TOKEN)}\n`);
   startScheduler();
+  resourceMonitor.startMonitoring();
   // Limpieza de logs al arrancar y después cada semana
   cleanOldLogs();
   setInterval(cleanOldLogs, 7 * 24 * 60 * 60 * 1000).unref();
