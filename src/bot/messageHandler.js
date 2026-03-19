@@ -455,11 +455,16 @@ async function processMessage(waId, messageObj) {
         let horarioLabel = '';
         if (horarioVal.includes('mañana') || horarioVal.includes('manana')) horarioLabel = 'Mañana';
         else if (horarioVal.includes('tarde')) horarioLabel = 'Tarde';
-        let anotacion = '[IA] Digital: sin determinar';
-        if (digitalVal === 'Sí') {
+        let anotacion;
+        if (stageAplicado === 'escalated') {
+          anotacion = '[IA] Solicita llamada';
+        } else if (digitalVal === 'Sí') {
           anotacion = horarioLabel ? `[IA] Digital: Sí (${horarioLabel})` : '[IA] Digital: Sí';
+        } else if (digitalVal === 'No') {
+          anotacion = '[IA] Digital: Rechaza';
+        } else {
+          anotacion = '[IA] Digital: sin determinar';
         }
-        else if (digitalVal === 'No') anotacion = '[IA] Digital: Rechaza';
         triggerEncargoSync(nexp, `stage_${stageAplicado}`, anotacion, false, true);
       }
 
