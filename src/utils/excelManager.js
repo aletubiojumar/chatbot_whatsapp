@@ -204,7 +204,8 @@ function getHeaders(ws) {
   const headers = getRawHeaders(ws);
   // Compatibilidad con variantes históricas del encabezado de AT. Perito.
   if (headers['AT. Perito'] === undefined) {
-    if (headers['ATT. Perito'] !== undefined) headers['AT. Perito'] = headers['ATT. Perito'];
+    if (headers['At. perito'] !== undefined)  headers['AT. Perito'] = headers['At. perito'];
+    else if (headers['ATT. Perito'] !== undefined) headers['AT. Perito'] = headers['ATT. Perito'];
     else if (headers['Att. Perito'] !== undefined) headers['AT. Perito'] = headers['Att. Perito'];
   }
   if (headers['Relación'] === undefined && headers['Relacion'] !== undefined) {
@@ -663,25 +664,25 @@ function removeTechnicalColumns() {
       deleteSheetColumn(ws, col);
     }
 
-    // Normaliza cabeceras históricas "ATT. Perito"/"Att. Perito" -> "AT. Perito".
+    // Normaliza cabeceras históricas "ATT. Perito"/"Att. Perito" -> "At. perito".
     headers = getRawHeaders(ws);
     const row0 = XLSX.utils.decode_range(ws['!ref']).s.r;
-    const colAT = headers['AT. Perito'];
+    const colAT  = headers['At. perito'] ?? headers['AT. Perito'];
     const colATT = headers['ATT. Perito'];
     const colAtt = headers['Att. Perito'];
     let didNormalizeAt = false;
 
     if (colAT === undefined && colATT !== undefined) {
-      setCellValue(ws, row0, colATT, 'AT. Perito');
+      setCellValue(ws, row0, colATT, 'At. perito');
       didNormalizeAt = true;
     } else if (colAT === undefined && colAtt !== undefined) {
-      setCellValue(ws, row0, colAtt, 'AT. Perito');
+      setCellValue(ws, row0, colAtt, 'At. perito');
       didNormalizeAt = true;
     }
 
     headers = getRawHeaders(ws);
-    const mainCol = headers['AT. Perito'];
-    const legacyCols = [headers['ATT. Perito'], headers['Att. Perito']]
+    const mainCol = headers['At. perito'] ?? headers['AT. Perito'];
+    const legacyCols = [headers['ATT. Perito'], headers['Att. Perito'], headers['AT. Perito']]
       .filter((c) => c !== undefined && c !== mainCol)
       .sort((a, b) => b - a);
 

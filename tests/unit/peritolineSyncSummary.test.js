@@ -16,7 +16,7 @@ describe('buildObservacionesEspecialesText', () => {
       Daños: '360',
       Digital: 'Sí',
       Horario: 'mañana',
-      'AT. Perito': 'yo - sin indicar - 34674742564',
+      'At. perito': 'yo - sin indicar - 34674742564',
     };
 
     const text = buildObservacionesEspecialesText(row);
@@ -35,7 +35,7 @@ describe('buildObservacionesEspecialesText', () => {
       Daños: '1500',
       Digital: 'No',
       Horario: '',
-      'AT. Perito': 'Pedro López - hermano - 34611111111',
+      'At. perito': 'Pedro López - hermano - 34611111111',
     };
 
     const text = buildObservacionesEspecialesText(row);

@@ -99,7 +99,7 @@ function buildObservacionesEspecialesText(row) {
     : `• Digital: ${digital}`;
 
   // AT. Perito se almacena como "nombre - relacion - telefono"
-  const attPeritoRaw  = String(row['AT. Perito'] ?? row['ATT. Perito'] ?? row['Att. Perito'] ?? '').trim();
+  const attPeritoRaw  = String(row['At. perito'] ?? row['AT. Perito'] ?? row['ATT. Perito'] ?? row['Att. Perito'] ?? '').trim();
   const attParts      = attPeritoRaw ? attPeritoRaw.split(' - ') : [];
   const attNombre   = attParts[0] && attParts[0] !== 'sin indicar' ? attParts[0] : '-';
   const attRelacion = attParts[1] && attParts[1] !== 'sin indicar' ? attParts[1] : '';
