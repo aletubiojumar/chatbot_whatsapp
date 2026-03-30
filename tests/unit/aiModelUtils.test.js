@@ -81,6 +81,21 @@ describe('model lists', () => {
       resetModelFallbackState();
     }
   });
+
+  test('getOpenAIModelList usa fallback por defecto si no hay OPENAI_MODEL_FALLBACKS', () => {
+    const prevPrimary = process.env.OPENAI_MODEL;
+    const prevFallbacks = process.env.OPENAI_MODEL_FALLBACKS;
+
+    try {
+      process.env.OPENAI_MODEL = 'gpt-5-mini';
+      delete process.env.OPENAI_MODEL_FALLBACKS;
+      assert.deepEqual(getOpenAIModelList(), ['gpt-5-mini', 'gpt-5-pro']);
+    } finally {
+      restoreEnvVar('OPENAI_MODEL', prevPrimary);
+      restoreEnvVar('OPENAI_MODEL_FALLBACKS', prevFallbacks);
+      resetModelFallbackState();
+    }
+  });
 });
 
 describe('tryOpenAIWithFallbacks', () => {

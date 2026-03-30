@@ -1,6 +1,6 @@
 # Bot Pericial Jumar
 
-Chatbot conversacional para la gestión de siniestros de seguros. Contacta con los asegurados via WhatsApp, verifica datos del expediente, coordina la visita del perito y sincroniza el encargo con PeritoLine — todo mediante IA (Gemini) integrada con la Meta Cloud API.
+Chatbot conversacional para la gestión de siniestros de seguros. Contacta con los asegurados via WhatsApp, verifica datos del expediente, recoge la preferencia horaria de la videoperitación y sincroniza el encargo con PeritoLine mediante IA integrada con la Meta Cloud API.
 
 ---
 
@@ -58,7 +58,7 @@ El adaptador de canal implementa una **interfaz universal**:
 
 - Node.js ≥ 18
 - Cuenta de Meta for Developers con app de WhatsApp Business
-- API Key de Google AI Studio (Gemini)
+- API Key de Google AI Studio (Gemini) y/o OpenAI
 - HTTPS público para el webhook (producción) o ngrok (desarrollo)
 - Playwright instalado (para la sincronización con PeritoLine)
 
@@ -79,13 +79,24 @@ cp .env.example .env   # editar con tus credenciales reales
 
 ```env
 # ── IA ────────────────────────────────────────────────────────────────────
+AI_USING_PLATFORM=both   # both | gemini | openai
 GEMINI_API_KEY=           # API Key de Google AI Studio
 GEMINI_MODEL=gemini-2.5-flash
 GEMINI_MODEL_FALLBACKS=gemini-1.5-flash,gemini-1.5-flash-8b
+GEMINI_JSON_RETRIES_PER_MODEL=1
 GEMINI_TEMPERATURE=0.0    # 0.0 = más determinístico, 1.0 = más creativo
 GEMINI_TOP_P=0.95
 GEMINI_TOP_K=40
 GEMINI_MAX_OUTPUT_TOKENS=1000
+OPENAI_API_KEY=          # Opcional si AI_USING_PLATFORM=gemini
+OPENAI_MODEL=gpt-5-mini
+OPENAI_MODEL_FALLBACKS=gpt-5-pro
+OPENAI_FALLBACK_ENABLED=true
+OPENAI_TIMEOUT_MS=15000
+OPENAI_JSON_RETRIES_PER_MODEL=1
+
+# Usa aquí IDs de modelo que existan en tu cuenta de OpenAI.
+# El ejemplo usa los IDs públicos actuales de GPT-5.
 
 # ── WhatsApp / Meta ───────────────────────────────────────────────────────
 META_VERIFY_TOKEN=        # Token de verificación del webhook de Meta
@@ -99,8 +110,9 @@ HOST=127.0.0.1
 
 # ── Almacenamiento ────────────────────────────────────────────────────────
 EXCEL_PATH=./data/allianz_latest.xlsx
+CONV_STATE_FILE=./data/bot_state.xlsx
 EXCEL_ESTADO_PENDIENTE=OK         # Valor de la columna Estado que activa el bot
-CONV_STATE_SHEET=__bot_state      # Hoja interna de estado técnico
+CONV_STATE_SHEET=__bot_state      # Hoja interna dentro de bot_state.xlsx
 
 # ── Logging ───────────────────────────────────────────────────────────────
 LOG_LEVEL=info            # debug | info | warn | error
@@ -167,7 +179,7 @@ Exponer el puerto con ngrok en otra terminal y configurar la URL en el panel de 
 
 ## Envío de mensajes iniciales
 
-El script lee el Excel de expedientes (`EXCEL_PATH`) y envía el template de WhatsApp aprobado a cada asegurado cuya columna `Estado` sea `EXCEL_ESTADO_PENDIENTE` (por defecto `OK`). Registra el estado de cada conversación en la hoja interna `__bot_state` del Excel.
+El script lee el Excel de expedientes (`EXCEL_PATH`) y envía el template de WhatsApp aprobado a cada asegurado cuya columna `Estado` sea `EXCEL_ESTADO_PENDIENTE` (por defecto `OK`). Registra el estado técnico de cada conversación en `data/bot_state.xlsx`.
 
 ```bash
 # Enviar todos los expedientes pendientes
@@ -184,6 +196,7 @@ npm run send -- --dry-run
 ```
 
 Cada envío inicializa la conversación en `stage=consent`, `attempts=0`, `contacto="En curso"` y activa el scheduler de recordatorios automáticos (Escenario A).
+El estado técnico se persiste en `data/bot_state.xlsx`, no dentro del Excel de negocio.
 
 ---
 
@@ -201,9 +214,9 @@ consent → identification → valoracion → agendando → finalizado → cerra
 |---|---|
 | `consent` | El asegurado confirma continuar por este medio |
 | `identification` | Verificación de nombre, dirección y causa del siniestro |
-| `valoracion` | Daños, estimación económica, aceptación de videoperitación, persona de contacto para el perito |
-| `agendando` | Preferencia horaria para la visita (mañana/tarde) |
-| `finalizado` | La IA envía el resumen final con todos los datos recogidos |
+| `valoracion` | Daños, estimación económica, aceptación de videoperitación y persona que atenderá al perito |
+| `agendando` | Recogida de preferencia horaria (`Mañana` / `Tarde`) sin reserva automática de calendario |
+| `finalizado` | La IA envía el cierre definitivo tras el resumen final o tras recoger la preferencia horaria |
 | `cerrado` | Silencio total — **terminal, IA bloqueada** |
 | `escalated` | Derivado a atención humana — **terminal, IA bloqueada** |
 
@@ -227,10 +240,10 @@ POST /webhook
        si type='location'  → reverseGeocode(lat, lon) → dirección en texto
   6. canProcess()          → bloquea si stage es terminal, envía respuesta segura
   7. Primera respuesta     → triggerEncargoSync (asignar perito + marcar contacto)
-  8. procesarConIA()       → Gemini genera respuesta estructurada en JSON
+  8. procesarConIA()       → IA genera respuesta estructurada en JSON
   9. excelManager          → actualiza columnas de negocio en el Excel
  10. adapter.sendText()    → envía respuesta al usuario por WhatsApp
- 11. peritolineAutoSync    → si conversación terminada, dispara sync asíncrono (PDF + anotación)
+ 11. peritolineAutoSync    → si conversación terminada, dispara sync asíncrono (observaciones + anotación + PDF)
  12. pdfGenerator          → si conversación terminada, genera PDF de transcripción
 ```
 
@@ -251,7 +264,7 @@ Los errores y advertencias también se persisten en archivo — ver [Sistema de 
 
 ### Respuesta estructurada de la IA
 
-Gemini devuelve siempre un objeto JSON con este esquema:
+La IA devuelve siempre un objeto JSON con este esquema:
 
 ```json
 {
@@ -266,6 +279,7 @@ Gemini devuelve siempre un objeto JSON con este esquema:
     "acepta_videollamada": true,
     "preferencia_horaria": "mañana",
     "estado_expediente": "valoracion | agendando | finalizado | escalado_humano",
+    "tipo_respuesta": "normal | pregunta_identidad | peticion_ubicacion | resumen_final | cierre_definitivo",
     "ubicacion_pendiente": false,
     "idioma_conversacion": "es"
   }
@@ -273,6 +287,14 @@ Gemini devuelve siempre un objeto JSON con este esquema:
 ```
 
 `ubicacion_pendiente: true` indica que el asegurado ha reconocido la petición de ubicación pero no puede enviarla en ese momento. Activa el **standby de ubicación** (ver Schedulers).
+
+### Cadena de fallback de IA
+
+Por defecto (`AI_USING_PLATFORM=both`) el orden real de intento es:
+
+`GEMINI_MODEL → GEMINI_MODEL_FALLBACKS → OPENAI_MODEL → OPENAI_MODEL_FALLBACKS`
+
+Si un modelo se satura, devuelve `429`, queda retirado o no está disponible, el bot cambia automáticamente al siguiente. Tras unos minutos intenta volver al modelo principal.
 
 ### Schedulers automáticos
 
@@ -289,14 +311,7 @@ El scheduler corre cada `SCHEDULER_CHECK_MINUTES` (15 min). Los mensajes de inac
 
 ## Solicitud de ubicación GPS
 
-Justo antes de enviar el resumen final de datos, el bot solicita **siempre** la ubicación del riesgo asegurado. El mensaje varía según el tipo de intervención:
-
-| Tipo | Mensaje |
-|---|---|
-| **Presencial** | *"Rogamos nos pueda mandar la ubicación del riesgo para facilitársela al perito y pueda llegar con facilidad. Gracias."* |
-| **Videoperitación** | *"Rogamos nos pueda mandar la ubicación del riesgo para concretar la dirección con exactitud. Gracias."* |
-
-El mensaje se adapta al idioma activo de la conversación. Si el asegurado ya compartió la ubicación durante la confirmación de dirección, no se vuelve a pedir.
+Justo antes del resumen final, el bot solicita **siempre** la ubicación del riesgo asegurado. El texto exacto lo define el prompt de `docs/pront/Promp IA Whatsapp.docx` y se adapta al idioma activo de la conversación. Si el asegurado ya compartió la ubicación durante la confirmación de dirección, no se vuelve a pedir.
 
 ### Cuando el asegurado no envía la ubicación
 
@@ -362,6 +377,8 @@ Gestionada exclusivamente por el bot. Persiste el estado entre reinicios. **No s
 | `waId` | Número de WhatsApp (sin +) |
 | `status` | `pending` / `escalated` / `awaiting_location` |
 | `stage` | Stage actual de la conversación |
+| `lastBotResponseType` | Tipo de la última salida de la IA (`normal`, `peticion_ubicacion`, etc.) |
+| `locationRequestCount` | Número de veces que ya se ha pedido la ubicación GPS |
 | `attempts` | Reenvíos del template inicial |
 | `inactivityAttempts` | Recordatorios de inactividad enviados |
 | `nextReminderAt` | Timestamp Unix del próximo scheduler |
@@ -403,9 +420,19 @@ La sincronización se dispara en **dos momentos** distintos del ciclo de vida de
 | Momento | Trigger | Acciones en PeritoLine |
 |---|---|---|
 | **Primera respuesta** | El usuario envía su primer mensaje | Asignar perito virtual, marcar contacto inicial |
-| **Cierre de conversación** | `stage=finalizado` o `stage=escalated` | Subir PDF, escribir anotación del encargo |
+| **Cierre de conversación** | `stage=finalizado` o `stage=escalated` | Actualizar observaciones especiales, escribir anotación del encargo y subir PDF |
 
 En ambos casos, `triggerEncargoSync(nexp, reason, anotacion)` comprueba el cooldown (`PERITOLINE_AUTO_SYNC_COOLDOWN_MS`) y que no haya ya una ejecución en curso para ese nexp, luego lanza `scripts/peritoline_sync.js` como child process (`child.unref()`) sin bloquear el hilo principal.
+
+### Sin calendario automático
+
+El flujo conversacional actual **no crea citas en Outlook ni propone huecos automáticos**. Si el asegurado acepta la videoperitación y responde `mañana` o `tarde`, el bot:
+
+1. guarda `Digital` y `Horario` en el Excel,
+2. cierra la conversación,
+3. dispara el sync final de PeritoLine.
+
+La gestión posterior de la cita se hace fuera del bot.
 
 ### Anotación automática del encargo
 
@@ -413,7 +440,7 @@ El script escribe en el campo **Anotación Encargo 01** (máx. 128 caracteres) d
 
 | Valor `Contacto` en Excel | Anotación escrita |
 |---|---|
-| `Sí` + videoperitación aceptada | `[IA] Digital: Sí` |
+| `Sí` + videoperitación aceptada | `[IA] Digital: Sí` o `[IA] Digital: Sí (Mañana/Tarde)` |
 | `Sí` + visita presencial | `[IA] Digital: No` |
 | `No` (nunca respondió al primer mensaje) | `[IA] Asegurado no responde` |
 | `No` (dejó de responder a mitad) | `[IA] Asegurado deja de responder` |
@@ -470,7 +497,7 @@ Cada directorio `[nexp]` se crea automáticamente la primera vez que se registra
 
 ```
 2026-03-18T09:01:31.952Z [ERROR] Error crítico en processMessage: Cannot read ...
-2026-03-18T09:05:12.001Z [WARN]  IA devolvió mensaje vacío — se envía fallback
+2026-03-18T09:05:12.001Z [WARN]  IA devolvió mensaje vacío — se solicita una nueva redacción
 2026-03-18T09:10:00.000Z === Sync iniciado | encargo=880337292 | motivo=primera_respuesta ===
 2026-03-18T09:10:03.210Z ✅ Perito virtual asignado correctamente
 2026-03-18T09:10:05.500Z === Sync finalizado OK | encargo=880337292 ===
@@ -510,7 +537,7 @@ npm test
 | `tests/unit/stateMachine.test.js` | `canProcess()`, `isValidTransition()`, stages terminales |
 | `tests/unit/dedup.test.js` | `isDuplicate()` — deduplicación por messageId |
 | `tests/unit/rateLimiter.test.js` | `checkLimit()` — límites por usuario y global |
-| `tests/unit/messageHandlerUtils.test.js` | Utilidades del handler: detección de cierre, estimación económica, normalización de teléfono, confirmación afirmativa, extracción de relación |
+| `tests/unit/messageHandlerUtils.test.js` | Utilidades del handler: estimación económica, normalización de teléfono, confirmación afirmativa, extracción de relación, preferencia horaria |
 | `tests/unit/schedulerUtils.test.js` | `nextBusinessHoursStart()` — cálculo del próximo período laboral |
 
 ---
@@ -526,7 +553,7 @@ chatbot_ia/
 │   │   ├── logger.js                # Logging seguro sin PII (consola)
 │   │   ├── fileLogger.js            # Logging en archivos por expediente (logs/[nexp]/)
 │   │   ├── atomicWrite.js           # Escritura atómica JSON + permisos
-│   │   ├── excelManager.js          # I/O del Excel (negocio + estado técnico)
+│   │   ├── excelManager.js          # I/O del Excel de negocio y del fichero de estado técnico
 │   │   └── pdfGenerator.js          # Generación de PDFs + limpieza de debug logs
 │   ├── bot/
 │   │   ├── index.js                 # Servidor Express + webhook handler
@@ -540,10 +567,11 @@ chatbot_ia/
 │   │   ├── dedup.js                 # Deduplicación por messageId
 │   │   └── rateLimiter.js           # Rate limit por usuario y global
 │   ├── ai/
-│   │   └── aiModel.js               # Cliente Gemini con fallback de modelos
+│   │   └── aiModel.js               # Cliente Gemini/OpenAI con fallback de proveedores y modelos
 │   └── sendInitialMessage.js        # CLI de envío masivo desde Excel
 ├── data/
-│   └── allianz_latest.xlsx          # Excel fuente (datos de negocio + estado técnico)
+│   ├── allianz_latest.xlsx          # Excel fuente de negocio
+│   └── bot_state.xlsx               # Estado técnico persistente del bot
 ├── docs/
 │   ├── pront/
 │   │   └── Promp IA Whatsapp.docx   # System prompt (reglas 1-7 + variables del expediente)
@@ -604,16 +632,16 @@ log.debug('payload completo:', body);  // solo visible con LOG_LEVEL=debug
 
 ### Máquina de estados (`src/bot/stateMachine.js`)
 
-- Bloquea la llamada a Gemini si el stage es `cerrado` o `escalated`
-- Responde con mensajes predefinidos seguros en lugar de llamar a la IA
+- Bloquea el flujo normal si el stage es terminal
+- Permite una última respuesta segura generada por IA cuando el expediente está `finalizado` o `escalated`, y después lo deja en `cerrado`
 - `isValidTransition(from, to)` valida transiciones antes de persistirlas
 
-### Fallback de modelos Gemini (`src/ai/aiModel.js`)
+### Fallback de modelos IA (`src/ai/aiModel.js`)
 
-- Modelo primario: `gemini-2.5-flash`
-- Fallbacks: `gemini-1.5-flash`, `gemini-1.5-flash-8b`
-- Cambia automáticamente ante errores 429/RESOURCE_EXHAUSTED y vuelve al primario tras 5 min
-- Si todos los modelos fallan, devuelve un mensaje seguro al usuario
+- Orden por defecto: `GEMINI_MODEL → GEMINI_MODEL_FALLBACKS → OPENAI_MODEL → OPENAI_MODEL_FALLBACKS`
+- Cambia automáticamente ante errores transitorios (`429`, saturación, timeouts, modelos retirados o sin acceso)
+- Tras 5 minutos intenta volver al modelo principal del proveedor
+- Si fallan todos los modelos disponibles, devuelve una respuesta segura para escalar el caso
 
 ---
 

@@ -38,8 +38,8 @@ function getGeminiModelList() {
 }
 
 function getOpenAIModelList() {
-  const primary = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
-  const fallbacks = parseFallbackModels(process.env.OPENAI_MODEL_FALLBACKS || '');
+  const primary = process.env.OPENAI_MODEL || 'gpt-5-mini';
+  const fallbacks = parseFallbackModels(process.env.OPENAI_MODEL_FALLBACKS || 'gpt-5-pro');
   return uniqueModels([primary, ...fallbacks]);
 }
 
@@ -672,7 +672,7 @@ async function translateMessagesToSpanish(mensajes, idioma) {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
+        model: process.env.OPENAI_MODEL || 'gpt-5-mini',
         temperature: 0,
         response_format: { type: 'json_object' },
         messages: [

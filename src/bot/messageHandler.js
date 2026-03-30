@@ -8,22 +8,6 @@ const { generateConversationPdf } = require('../utils/pdfGenerator');
 const { buildInitialTemplateText } = require('./templateSender');
 const fileLogger          = require('../utils/fileLogger');
 const axios = require('axios');
-const {
-  findNextAvailableSlot,
-  bookAppointment,
-  getBooking,
-  saveProposedSlot,
-  formatSlotForUser,
-  detectPreferenceFromText,
-} = require('../calendar/appointmentScheduler');
-
-// Activo solo si están configuradas las credenciales de Microsoft Graph
-const CALENDAR_ENABLED = !!(process.env.OUTLOOK_CALENDAR_USER && process.env.MICROSOFT_TENANT_ID);
-
-// Mapping nombre perito → email para añadirlo como attendee en el evento de Outlook
-const PERITO_EMAIL_MAP = (() => {
-  try { return JSON.parse(process.env.OUTLOOK_PERITO_EMAILS || '{}'); } catch { return {}; }
-})();
 
 // Mapeo entre los valores que devuelve la IA y los stages internos
 const ESTADO_IA_TO_STAGE = {
@@ -145,6 +129,19 @@ function detectEconomicEstimate(text) {
   }
 
   return null;
+}
+
+function normalizeSchedulePreference(preferencia) {
+  const pref = norm(preferencia);
+  if (pref === 'manana') return 'Mañana';
+  if (pref === 'tarde') return 'Tarde';
+  return '';
+}
+
+function shouldAssumeDigitalAcceptance({ extractedDigital, existingDigital, preferredSchedule }) {
+  if (!preferredSchedule) return false;
+  if (typeof extractedDigital === 'boolean') return extractedDigital;
+  return String(existingDigital || '').trim().toLowerCase() !== 'no';
 }
 
 async function reverseGeocode(lat, lon) {
@@ -399,7 +396,8 @@ async function processMessage(waId, messageObj) {
     }
     // tipoVivienda === 'unifamiliar': la IA gestiona sin hint adicional
 
-    contextoSistema += '\n[Videoperitación]: Si el usuario no expresa dudas, no expliques funcionamiento; pregunta disponibilidad directa (mañana/tarde).';
+    //contextoSistema += '\n[Videoperitación]: Si el usuario no expresa dudas, no expliques funcionamiento; pregunta disponibilidad directa (mañana/tarde).';
+    contextoSistema += '\n[CIERRE SIN CALENDARIO]: No hay agenda automática. Si el asegurado acepta la videoperitación e indica preferencia horaria (mañana o tarde), confirma que el equipo gestionará la cita con esa preferencia y emite un mensaje final. Marca estado_expediente="finalizado" y tipo_respuesta="cierre_definitivo".';
 
     // Estado de espera de ubicación
     if (conversation.status === 'awaiting_location') {
@@ -434,78 +432,6 @@ async function processMessage(waId, messageObj) {
     }
     if (identityConfirmedNow) {
       contextoSistema += '\n[CONFIRMACIÓN IDENTIDAD]: El usuario responde afirmativamente a tu pregunta de identidad/relación. Da la identificación por confirmada y avanza al siguiente dato pendiente. PROHIBIDO repetir la misma pregunta de identidad.';
-    }
-
-    // ── Calendario Outlook: consultar slot ANTES de llamar a la IA ───────
-    if (CALENDAR_ENABLED) {
-      const digitalSi       = conversation.digital === 'Sí';
-      const prefFromText    = detectPreferenceFromText(text);
-      const prefFromPrev    = String(conversation.horario || '').trim();
-      const currentPref     = prefFromText || prefFromPrev;
-      const existingBooking = getBooking(nexp);
-      const slotConfirmed   = existingBooking?.status === 'confirmed';
-
-      if (digitalSi && currentPref && !slotConfirmed) {
-        const proposedBooking = existingBooking?.status === 'proposed' && existingBooking?.slotStart;
-
-        if (proposedBooking && isAffirmativeAck(text)) {
-          // Usuario confirma el slot propuesto → crear la cita ahora
-          try {
-            const proposedSlot = { start: new Date(existingBooking.slotStart) };
-            const [attNombreRaw = '', , attTelefonoRaw = ''] = String(conversation.attPerito || '').split(' - ');
-            const attNombreFinal   = attNombreRaw   !== 'sin indicar' ? attNombreRaw   : '';
-            const attTelefonoFinal = attTelefonoRaw !== 'sin indicar' ? attTelefonoRaw : conversation.waId || '';
-            const virtualPeritoKey = (process.env.PERITOLINE_VIRTUAL_PERITO_NAME || '').toUpperCase();
-            const peritoEmail      = PERITO_EMAIL_MAP[virtualPeritoKey] || '';
-
-            // URL de la plataforma web de videoperitación de la aseguradora
-            const aseguradoraUrl = (() => {
-              try {
-                const urlMap = JSON.parse(process.env.OUTLOOK_ASEGURADORA_URLS || '{}');
-                const aseg   = String(valoresExcel.aseguradora || '').trim().toUpperCase();
-                return urlMap[aseg] || process.env.OUTLOOK_ASEGURADORA_URL_DEFAULT || '';
-              } catch { return process.env.OUTLOOK_ASEGURADORA_URL_DEFAULT || ''; }
-            })();
-
-            const result = await bookAppointment({
-              nexp,
-              slot:       proposedSlot,
-              attName:    attNombreFinal,
-              attPhone:   attTelefonoFinal,
-              peritoEmail,
-              peritoName: virtualPeritoKey,
-              aseguradoraUrl,
-            });
-
-            if (result.success) {
-              const slotText = formatSlotForUser(proposedSlot);
-              contextoSistema += `\n[CITA CONFIRMADA EN CALENDARIO]: La videoperitación ha sido registrada en el calendario de Outlook para el ${slotText}. Confirma al asegurado la fecha y hora exacta y marca estado_expediente="finalizado".`;
-              L.log(`📅 Cita Outlook creada: ${slotText}`);
-            }
-          } catch (err) {
-            contextoSistema += `\n[ERROR CALENDARIO]: No se pudo crear la cita (${err.message}). Informa al asegurado de que le confirmaremos la fecha por otro medio y finaliza la conversación.`;
-            L.err(`❌ Error creando cita Outlook: ${err.message}`);
-          }
-
-        } else if (!proposedBooking) {
-          // Aún no hay slot propuesto → buscar y proponer uno
-          try {
-            const slot = await findNextAvailableSlot(currentPref, nexp);
-            if (slot) {
-              saveProposedSlot(nexp, slot);
-              const slotText = formatSlotForUser(slot);
-              contextoSistema += `\n[SLOT DISPONIBLE EN OUTLOOK]: Hay disponibilidad el ${slotText}. Propón EXACTAMENTE esta fecha y hora al asegurado para que confirme. No marques "finalizado" hasta que el asegurado confirme.`;
-              L.log(`📅 Slot propuesto: ${slotText}`);
-            } else {
-              contextoSistema += `\n[SIN DISPONIBILIDAD]: No hay huecos disponibles en los próximos ${process.env.CALENDAR_HORIZON_DAYS || 5} días laborables para la preferencia "${currentPref}". Informa al asegurado y ofrece contactar por teléfono para gestionar la cita manualmente.`;
-              L.warn(`⚠️  Sin disponibilidad en Outlook para "${currentPref}"`);
-            }
-          } catch (err) {
-            L.err(`❌ Error consultando Outlook: ${err.message}`);
-            // No bloqueamos el flujo: la IA continúa sin la info del slot
-          }
-        }
-      }
     }
 
     // ── Llamada a la IA ──────────────────────────────────────────────────
@@ -638,8 +564,17 @@ async function processMessage(waId, messageObj) {
       if (typeof acepta_videollamada === 'boolean') {
         excelUpdates.digital = acepta_videollamada ? 'Sí' : 'No';
       }
-      if (preferencia_horaria === 'mañana') excelUpdates.horario = 'Mañana';
-      else if (preferencia_horaria === 'tarde') excelUpdates.horario = 'Tarde';
+      const horarioPreferido = normalizeSchedulePreference(preferencia_horaria);
+      if (horarioPreferido) {
+        excelUpdates.horario = horarioPreferido;
+        if (shouldAssumeDigitalAcceptance({
+          extractedDigital: acepta_videollamada,
+          existingDigital: conversation.digital,
+          preferredSchedule: horarioPreferido,
+        })) {
+          excelUpdates.digital = 'Sí';
+        }
+      }
       if (locationCoords) excelUpdates.coordenadas = locationCoords;
       if (tipo_respuesta === 'peticion_ubicacion') {
         excelUpdates.locationRequestCount = locationRequestCount + 1;
@@ -676,17 +611,6 @@ async function processMessage(waId, messageObj) {
           excelUpdates.stage = nuevoStage;
           excelUpdates.contacto = 'Sí'; // Conversación terminada con el asegurado
           L.log(`🔄 Stage → ${nuevoStage}`);
-        }
-      }
-
-      // ── Calendario Outlook: guardar datos de cita confirmada en Excel ──
-      if (CALENDAR_ENABLED) {
-        const booking = getBooking(nexp);
-        if (booking?.status === 'confirmed' && booking.slotStart) {
-          const slotDate = new Date(booking.slotStart);
-          excelUpdates.citaFecha     = slotDate.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
-          excelUpdates.citaHora      = `${String(slotDate.getHours()).padStart(2, '0')}:${String(slotDate.getMinutes()).padStart(2, '0')}`;
-          excelUpdates.citaOutlookId = booking.outlookEventId || '';
         }
       }
 
@@ -799,5 +723,7 @@ module.exports = {
     isAffirmativeAck,
     extractRelationship,
     analyzeAddressType,
+    normalizeSchedulePreference,
+    shouldAssumeDigitalAcceptance,
   },
 };

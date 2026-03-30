@@ -13,6 +13,8 @@ const {
   normalizeContactPhone,
   isAffirmativeAck,
   extractRelationship,
+  normalizeSchedulePreference,
+  shouldAssumeDigitalAcceptance,
 } = _test;
 
 // ── detectEconomicEstimate ───────────────────────────────────────────────────
@@ -126,5 +128,53 @@ describe('extractRelationship', () => {
 
   test('texto vacío → cadena vacía', () => {
     assert.equal(extractRelationship(''), '');
+  });
+});
+
+describe('normalizeSchedulePreference', () => {
+  test('"mañana" → "Mañana"', () => {
+    assert.equal(normalizeSchedulePreference('mañana'), 'Mañana');
+  });
+
+  test('"tarde" → "Tarde"', () => {
+    assert.equal(normalizeSchedulePreference('tarde'), 'Tarde');
+  });
+
+  test('valor vacío → cadena vacía', () => {
+    assert.equal(normalizeSchedulePreference(''), '');
+  });
+});
+
+describe('shouldAssumeDigitalAcceptance', () => {
+  test('si la IA marca acepta_videollamada=true, devuelve true', () => {
+    assert.equal(shouldAssumeDigitalAcceptance({
+      extractedDigital: true,
+      existingDigital: '',
+      preferredSchedule: 'Mañana',
+    }), true);
+  });
+
+  test('si hay preferencia horaria y no existe rechazo previo, asume aceptación', () => {
+    assert.equal(shouldAssumeDigitalAcceptance({
+      extractedDigital: undefined,
+      existingDigital: '',
+      preferredSchedule: 'Tarde',
+    }), true);
+  });
+
+  test('si existe rechazo previo, no fuerza digital sí', () => {
+    assert.equal(shouldAssumeDigitalAcceptance({
+      extractedDigital: undefined,
+      existingDigital: 'No',
+      preferredSchedule: 'Mañana',
+    }), false);
+  });
+
+  test('sin preferencia horaria, no asume aceptación', () => {
+    assert.equal(shouldAssumeDigitalAcceptance({
+      extractedDigital: undefined,
+      existingDigital: '',
+      preferredSchedule: '',
+    }), false);
   });
 });
