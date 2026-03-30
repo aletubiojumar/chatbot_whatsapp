@@ -105,9 +105,14 @@ async function sendInitialMessages(opts = {}) {
 
   if (dryRun) console.log('⚠️  MODO DRY-RUN: no se enviarán mensajes reales\n');
 
-  // Cargar waIds con conversación activa para no resetear estados en curso
+  // Cargar waIds con conversación ACTIVA (no terminal) para no resetear estados en curso.
+  // Las conversaciones en estado terminal (escalated/finalizado/cerrado) SÍ pueden
+  // reiniciarse si el Excel ha sido limpiado para un nuevo envío.
+  const TERMINAL_STAGES_RESET = new Set(['escalated', 'finalizado', 'cerrado']);
   const existingWaIds = new Set(
-    readAllStatesFromExcel().map(s => String(s.waId))
+    readAllStatesFromExcel()
+      .filter(s => !TERMINAL_STAGES_RESET.has(s.stage) && s.status !== 'escalated')
+      .map(s => String(s.waId))
   );
   if (existingWaIds.size > 0) {
     console.log(`🔒 Conversaciones activas en __bot_state: ${existingWaIds.size} (se omitirán)\n`);
