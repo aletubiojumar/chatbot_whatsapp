@@ -9,7 +9,10 @@ require('dotenv').config({ path: require('path').join(__dirname, '../../.env') }
 const { _test } = require('../../src/bot/messageHandler');
 const {
   isDefinitiveClosingMessage,
+  isSummaryValidationMessage,
   detectEconomicEstimate,
+  getLocationRequestMessage,
+  hasSharedLocation,
   normalizeContactPhone,
   isAffirmativeAck,
   isIdentityRelationPrompt,
@@ -43,6 +46,35 @@ describe('isDefinitiveClosingMessage', () => {
 
   test('mensaje conversacional normal → false', () => {
     assert.equal(isDefinitiveClosingMessage('¿Cuál es la dirección exacta del siniestro?'), false);
+  });
+
+  test('mensaje de escalado seguro → true', () => {
+    assert.equal(
+      isDefinitiveClosingMessage('Su caso está siendo atendido por nuestro equipo. Le contactaremos en breve. Gracias por su paciencia.'),
+      true
+    );
+  });
+});
+
+// ── isSummaryValidationMessage ───────────────────────────────────────────────
+
+describe('isSummaryValidationMessage', () => {
+  test('detecta cabecera de resumen final → true', () => {
+    assert.equal(
+      isSummaryValidationMessage('Le indico los datos que tenemos para comprobar que están correctos:'),
+      true
+    );
+  });
+
+  test('detecta cola de validación del resumen → true', () => {
+    assert.equal(
+      isSummaryValidationMessage('Si algún dato no es correcto, indíquenoslo para ajustarlo.'),
+      true
+    );
+  });
+
+  test('mensaje normal → false', () => {
+    assert.equal(isSummaryValidationMessage('¿Será usted misma quien atienda al perito?'), false);
   });
 });
 
@@ -103,6 +135,38 @@ describe('normalizeContactPhone', () => {
 
   test('cadena vacía → cadena vacía', () => {
     assert.equal(normalizeContactPhone(''), '');
+  });
+});
+
+// ── ubicación ────────────────────────────────────────────────────────────────
+
+describe('getLocationRequestMessage', () => {
+  test('mensaje presencial en español coincide con prompt', () => {
+    assert.equal(
+      getLocationRequestMessage({ digitalAccepted: false, language: 'es' }),
+      'Rogamos nos pueda mandar la ubicación del riesgo para facilitársela al perito y pueda llegar con facilidad. Gracias.'
+    );
+  });
+
+  test('mensaje digital en español coincide con prompt', () => {
+    assert.equal(
+      getLocationRequestMessage({ digitalAccepted: true, language: 'es' }),
+      'Rogamos nos pueda mandar la ubicación del riesgo para concretar la dirección con exactitud. Gracias.'
+    );
+  });
+});
+
+describe('hasSharedLocation', () => {
+  test('true si el mensaje actual trae coordenadas', () => {
+    assert.equal(hasSharedLocation({}, '36.72,-4.42'), true);
+  });
+
+  test('true si ya había coordenadas guardadas', () => {
+    assert.equal(hasSharedLocation({ coordenadas: '36.72,-4.42' }, ''), true);
+  });
+
+  test('false si no hay coordenadas ni actuales ni guardadas', () => {
+    assert.equal(hasSharedLocation({}, ''), false);
   });
 });
 

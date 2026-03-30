@@ -67,6 +67,17 @@ function isLocationRequest(text) {
   return norm(text).includes('rogamos nos pueda mandar la ubicacion del riesgo');
 }
 
+function isSummaryValidationMessage(text) {
+  const t = norm(text);
+  if (!t) return false;
+
+  return (
+    t.includes('le indico los datos que tenemos para comprobar que estan correctos') ||
+    t.includes('si algun dato no es correcto') ||
+    t.includes('indiquenoslo para ajustarlo')
+  );
+}
+
 function isAffirmativeAck(text) {
   const t = String(text || '').trim().toLowerCase();
   return /^(si|sí|ok|vale|perfecto|correcto|todo ok|todo correcto|de acuerdo|confirmado)$/.test(t);
@@ -103,14 +114,48 @@ function isDefinitiveClosingMessage(text) {
     t.includes('finalizamos la comunicaci') ||
     t.includes('expediente ya está en gestión con el perito') ||
     t.includes('expediente ya esta en gestion con el perito') ||
+    t.includes('su caso está siendo atendido por nuestro equipo') ||
+    t.includes('su caso esta siendo atendido por nuestro equipo') ||
     t.includes('trasladamos la información al perito') ||
     t.includes('trasladamos la informacion al perito') ||
+    t.includes('le contactaremos en breve') ||
+    t.includes('el perito se pondrá en contacto con usted') ||
+    t.includes('el perito se pondra en contacto con usted') ||
     t.includes('le contactará el perito') ||
     t.includes('le contactara el perito') ||
     t.includes('para coordinar la visita') ||
     t.includes('para coordinar la inspeccion') ||
     t.includes('para coordinar la inspección')
   );
+}
+
+function hasSharedLocation(conversation, currentLocationCoords) {
+  return Boolean(String(currentLocationCoords || conversation?.coordenadas || '').trim());
+}
+
+function getLocationRequestMessage({ digitalAccepted = false, language = 'es' } = {}) {
+  const lang = String(language || 'es').trim().toLowerCase();
+  const key = digitalAccepted ? 'digital' : 'presencial';
+  const messagesByLanguage = {
+    es: {
+      presencial: 'Rogamos nos pueda mandar la ubicación del riesgo para facilitársela al perito y pueda llegar con facilidad. Gracias.',
+      digital: 'Rogamos nos pueda mandar la ubicación del riesgo para concretar la dirección con exactitud. Gracias.',
+    },
+    en: {
+      presencial: 'Please send us the location of the property so we can share it with the surveyor and help them arrive easily. Thank you.',
+      digital: 'Please send us the location of the property so we can confirm the address accurately. Thank you.',
+    },
+    ca: {
+      presencial: "Si us plau, enviï'ns la ubicació del risc per facilitar-la al perit i que hi pugui arribar amb facilitat. Gràcies.",
+      digital: "Si us plau, enviï'ns la ubicació del risc per concretar l'adreça amb exactitud. Gràcies.",
+    },
+    fr: {
+      presencial: "Merci de nous envoyer la localisation du risque afin de la transmettre à l'expert pour qu'il puisse arriver facilement. Merci.",
+      digital: "Merci de nous envoyer la localisation du risque afin de préciser l'adresse avec exactitude. Merci.",
+    },
+  };
+
+  return (messagesByLanguage[lang] || messagesByLanguage.es)[key];
 }
 
 function normalizeContactPhone(raw) {
@@ -521,6 +566,46 @@ async function processMessage(waId, messageObj) {
       // Normalizamos espacios para comparación/almacenado consistente.
       respuestaIA.mensaje_para_usuario = aiMessage;
     }
+
+    const locationRequestsSent = mensajesPrevios.filter(
+      m => m.direction === 'out' && isLocationRequest(m.text || '')
+    ).length;
+    const locationAlreadyShared = hasSharedLocation(conversation, locationCoords);
+    const aiWantsToSummarizeOrClose =
+      isSummaryValidationMessage(respuestaIA.mensaje_para_usuario) ||
+      isDefinitiveClosingMessage(respuestaIA.mensaje_para_usuario);
+
+    if (
+      !locationAlreadyShared &&
+      locationRequestsSent < 2 &&
+      aiWantsToSummarizeOrClose &&
+      !isLocationRequest(respuestaIA.mensaje_para_usuario)
+    ) {
+      const idiomaActivo = conversation.idioma || respuestaIA.datos_extraidos?.idioma_conversacion || 'es';
+      const digitalAceptado =
+        typeof respuestaIA.datos_extraidos?.acepta_videollamada === 'boolean'
+          ? respuestaIA.datos_extraidos.acepta_videollamada
+          : norm(conversation.digital || '') === 'si';
+
+      respuestaIA.mensaje_para_usuario = getLocationRequestMessage({
+        digitalAccepted: digitalAceptado,
+        language: idiomaActivo,
+      });
+      respuestaIA.datos_extraidos.estado_expediente = digitalAceptado ? 'agendando' : 'valoracion';
+      respuestaIA.datos_extraidos.ubicacion_pendiente = false;
+      L.warn('⚠️  IA intentó resumir/cerrar sin pedir ubicación GPS — se fuerza la petición antes de continuar');
+    }
+
+    if (
+      !locationAlreadyShared &&
+      locationRequestsSent >= 2 &&
+      aiWantsToSummarizeOrClose &&
+      respuestaIA.datos_extraidos.ubicacion_pendiente !== true
+    ) {
+      respuestaIA.datos_extraidos.ubicacion_pendiente = true;
+      L.warn('⚠️  IA omitió marcar ubicación pendiente tras dos peticiones — se corrige en backend');
+    }
+
     if (
       identityConfirmedNow &&
       lastOutMsg &&
@@ -603,8 +688,8 @@ async function processMessage(waId, messageObj) {
 
       const nuevoStage = ESTADO_IA_TO_STAGE[estado_expediente];
       if (nuevoStage) {
-        if (nuevoStage === 'finalizado' && !isDefinitiveClosingMessage(respuestaIA.mensaje_para_usuario)) {
-          L.warn(`⚠️  IA marcó "finalizado" sin despedida explícita; no se cierra aún`);
+        if ((nuevoStage === 'finalizado' || nuevoStage === 'escalated') && !isDefinitiveClosingMessage(respuestaIA.mensaje_para_usuario)) {
+          L.warn(`⚠️  IA marcó "${estado_expediente}" sin mensaje terminal explícito; no se cierra aún`);
         } else {
           stageAplicado = nuevoStage;
           excelUpdates.stage = nuevoStage;
@@ -724,7 +809,10 @@ module.exports = {
   // Exportadas para tests unitarios
   _test: {
     isDefinitiveClosingMessage,
+    isSummaryValidationMessage,
     detectEconomicEstimate,
+    getLocationRequestMessage,
+    hasSharedLocation,
     normalizeContactPhone,
     isAffirmativeAck,
     isIdentityRelationPrompt,
