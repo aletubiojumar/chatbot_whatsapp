@@ -13,24 +13,24 @@ describe('canProcess', () => {
     assert.equal(r.reason, 'no_conversation');
   });
 
-  test('status=escalated → bloqueado con mensaje', () => {
+  test('status=escalated → bloqueado con respuesta IA diferida', () => {
     const r = canProcess({ status: 'escalated', stage: 'consent' });
     assert.equal(r.ok, false);
     assert.equal(r.reason, 'terminal_status');
-    assert.ok(r.response);
+    assert.equal(r.aiBehavior, 'reply_once_then_close');
   });
 
-  test('stage=cerrado → bloqueado sin mensaje (silencio)', () => {
+  test('stage=cerrado → bloqueado en silencio', () => {
     const r = canProcess({ status: 'pending', stage: 'cerrado' });
     assert.equal(r.ok, false);
     assert.equal(r.reason, 'terminal_stage');
-    assert.equal(r.response, null);
+    assert.equal(r.aiBehavior, 'silent');
   });
 
-  test('stage=finalizado → bloqueado con mensaje de cierre', () => {
+  test('stage=finalizado → bloqueado con una última respuesta IA', () => {
     const r = canProcess({ status: 'pending', stage: 'finalizado' });
     assert.equal(r.ok, false);
-    assert.ok(r.response && r.response.length > 0);
+    assert.equal(r.aiBehavior, 'reply_once_then_close');
   });
 
   test('stage=consent, status=pending → permitido', () => {

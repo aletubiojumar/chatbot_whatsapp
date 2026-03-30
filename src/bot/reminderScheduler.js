@@ -207,12 +207,30 @@ async function handleLocationStandbyExpired(conv) {
 
     // Solo enviar mensaje si la conversación aún no está cerrada
     if (!isClosed) {
-      const msgCierre = 'Le informamos de que el perito se pondrá en contacto con usted para concretar los detalles de la visita. Gracias.';
-      await adapter.sendText(waId, msgCierre);
+      const historial = mensajes.map(m => ({
+        role:  m.direction === 'in' ? 'user' : 'model',
+        parts: [{ text: m.text }],
+      }));
+      const valoresExcel = {
+        saludo:        new Date().getHours() < 12 ? 'Buenos días' : 'Buenas tardes',
+        aseguradora:   userData.aseguradora   || 'la aseguradora',
+        nexp,
+        causa:         userData.causa         || '',
+        observaciones: userData.observaciones || '',
+        nombre:        userData.nombre        || 'el titular',
+        direccion:     userData.direccion     || '',
+        cp:            userData.cp            || '',
+        municipio:     userData.municipio     || '',
+      };
+      const respuestaIA = await procesarConIA(historial, '[SISTEMA: UBICACION_STANDBY_EXPIRADA]', '', valoresExcel);
+      const msgCierre = String(respuestaIA?.mensaje_para_usuario || '').trim();
+      if (msgCierre) {
+        await adapter.sendText(waId, msgCierre);
+      }
 
       const mensajesConCierre = [
         ...mensajes,
-        { direction: 'out', text: msgCierre, timestamp: new Date().toISOString() },
+        ...(msgCierre ? [{ direction: 'out', text: msgCierre, timestamp: new Date().toISOString() }] : []),
       ];
       conversationManager.createOrUpdateConversation(waId, {
         stage:               'cerrado',

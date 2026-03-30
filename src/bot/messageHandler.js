@@ -63,99 +63,13 @@ function isPeritoAttendeeMentionInUser(text) {
   );
 }
 
-function isLocationRequest(text) {
-  return norm(text).includes('rogamos nos pueda mandar la ubicacion del riesgo');
-}
-
-function isSummaryValidationMessage(text) {
-  const t = norm(text);
-  if (!t) return false;
-
-  return (
-    t.includes('le indico los datos que tenemos para comprobar que estan correctos') ||
-    t.includes('si algun dato no es correcto') ||
-    t.includes('indiquenoslo para ajustarlo')
-  );
-}
-
 function isAffirmativeAck(text) {
   const t = String(text || '').trim().toLowerCase();
   return /^(si|sí|ok|vale|perfecto|correcto|todo ok|todo correcto|de acuerdo|confirmado)$/.test(t);
 }
 
-function isIdentityRelationPrompt(text) {
-  const t = norm(text);
-  return (
-    (t.includes('esta relacionado con') || t.includes('esta relaciado con') || t.includes('es usted') || t.includes('es el asegurado')) &&
-    (t.includes('expediente') || t.includes('entidad indicada') || t.includes('asegurad'))
-  );
-}
-
-function isDefinitiveClosingMessage(text) {
-  const t = String(text || '').toLowerCase();
-  if (!t) return false;
-
-  // Señales de "resumen pendiente de confirmación": no debe cerrarse aún.
-  if (
-    t.includes('si algún dato no es correcto') ||
-    t.includes('si algun dato no es correcto') ||
-    t.includes('indíquenoslo para ajustarlo') ||
-    t.includes('indiquenoslo para ajustarlo') ||
-    t.includes('para comprobar que están correctos') ||
-    t.includes('para comprobar que estan correctos')
-  ) {
-    return false;
-  }
-
-  // Señales de cierre definitivo.
-  return (
-    t.includes('finalizamos la gestión por este medio') ||
-    t.includes('finalizamos la gestion por este medio') ||
-    t.includes('finalizamos la comunicaci') ||
-    t.includes('expediente ya está en gestión con el perito') ||
-    t.includes('expediente ya esta en gestion con el perito') ||
-    t.includes('su caso está siendo atendido por nuestro equipo') ||
-    t.includes('su caso esta siendo atendido por nuestro equipo') ||
-    t.includes('trasladamos la información al perito') ||
-    t.includes('trasladamos la informacion al perito') ||
-    t.includes('le contactaremos en breve') ||
-    t.includes('el perito se pondrá en contacto con usted') ||
-    t.includes('el perito se pondra en contacto con usted') ||
-    t.includes('le contactará el perito') ||
-    t.includes('le contactara el perito') ||
-    t.includes('para coordinar la visita') ||
-    t.includes('para coordinar la inspeccion') ||
-    t.includes('para coordinar la inspección')
-  );
-}
-
 function hasSharedLocation(conversation, currentLocationCoords) {
   return Boolean(String(currentLocationCoords || conversation?.coordenadas || '').trim());
-}
-
-function getLocationRequestMessage({ digitalAccepted = false, language = 'es' } = {}) {
-  const lang = String(language || 'es').trim().toLowerCase();
-  const key = digitalAccepted ? 'digital' : 'presencial';
-  const messagesByLanguage = {
-    es: {
-      presencial: 'Rogamos nos pueda mandar la ubicación del riesgo para facilitársela al perito y pueda llegar con facilidad. Gracias.',
-      digital: 'Rogamos nos pueda mandar la ubicación del riesgo para concretar la dirección con exactitud. Gracias.',
-    },
-    en: {
-      presencial: 'Please send us the location of the property so we can share it with the surveyor and help them arrive easily. Thank you.',
-      digital: 'Please send us the location of the property so we can confirm the address accurately. Thank you.',
-    },
-    ca: {
-      presencial: "Si us plau, enviï'ns la ubicació del risc per facilitar-la al perit i que hi pugui arribar amb facilitat. Gràcies.",
-      digital: "Si us plau, enviï'ns la ubicació del risc per concretar l'adreça amb exactitud. Gràcies.",
-    },
-    fr: {
-      presencial: "Merci de nous envoyer la localisation du risque afin de la transmettre à l'expert pour qu'il puisse arriver facilement. Merci.",
-      digital: "Merci de nous envoyer la localisation du risque afin de préciser l'adresse avec exactitude. Merci.",
-    },
-  };
-
-  return (messagesByLanguage[lang] || messagesByLanguage.es)[key];
 }
 
 function normalizeContactPhone(raw) {
@@ -279,6 +193,53 @@ async function lookupCP(text) {
   return null;
 }
 
+function buildAIConversationContext(conversation, nexp) {
+  const userData = conversation?.userData || {};
+  let mensajesPrevios = conversationManager.getMensajes(conversation?.waId);
+
+  if (mensajesPrevios.length === 0 && userData.aseguradora && nexp) {
+    mensajesPrevios = [{
+      direction: 'out',
+      text:      buildInitialTemplateText({ aseguradora: userData.aseguradora, nexp, causa: userData.causa || userData.observaciones || '' }),
+      timestamp: null,
+    }];
+  }
+
+  const historial = mensajesPrevios.map(m => ({
+    role:  m.direction === 'in' ? 'user' : 'model',
+    parts: [{ text: m.text }],
+  }));
+
+  const valoresExcel = {
+    saludo:        new Date().getHours() < 12 ? 'Buenos días' : 'Buenas tardes',
+    aseguradora:   userData.aseguradora   || 'la aseguradora',
+    nexp,
+    causa:         userData.causa         || '',
+    observaciones: userData.observaciones || '',
+    nombre:        userData.nombre        || 'el titular',
+    direccion:     userData.direccion     || '',
+    cp:            userData.cp            || '',
+    municipio:     userData.municipio     || '',
+  };
+
+  return { userData, mensajesPrevios, historial, valoresExcel };
+}
+
+function normalizeAIResponse(rawResponse) {
+  const respuestaIA = (rawResponse && typeof rawResponse === 'object') ? rawResponse : {};
+  if (!respuestaIA.datos_extraidos || typeof respuestaIA.datos_extraidos !== 'object') {
+    respuestaIA.datos_extraidos = {};
+  }
+  respuestaIA.mensaje_para_usuario = String(respuestaIA?.mensaje_para_usuario || '').trim();
+  return respuestaIA;
+}
+
+async function requestAIResponse({ historial, mensajeUsuario, contextoSistema, valoresExcel, extraContext = '' }) {
+  const mergedContext = extraContext ? `${contextoSistema}\n${extraContext}` : contextoSistema;
+  const rawResponse = await procesarConIA(historial, mensajeUsuario, mergedContext, valoresExcel);
+  return normalizeAIResponse(rawResponse);
+}
+
 /**
  * Procesa un mensaje entrante de WhatsApp.
  * @param {string} waId       - número sin + (ej. "34674742564")
@@ -339,11 +300,35 @@ async function processMessage(waId, messageObj) {
     const stateCheck = canProcess(conversation);
     if (!stateCheck.ok) {
       L.log(`⛔ Bloqueado (${stateCheck.reason}) stage=${conversation?.stage}`);
-      if (stateCheck.response) {
-        await adapter.sendText(waId, stateCheck.response);
-        if (conversation.stage === 'finalizado') {
-          conversationManager.createOrUpdateConversation(waId, { stage: 'cerrado' });
+      if (stateCheck.aiBehavior === 'reply_once_then_close') {
+        const { mensajesPrevios, historial, valoresExcel } = buildAIConversationContext(conversation, nexp);
+        const terminalMarker = conversation?.stage === 'finalizado'
+          ? '[SISTEMA: TERMINAL_FINALIZADO]'
+          : '[SISTEMA: TERMINAL_ESCALADO]';
+        const respuestaTerminal = await requestAIResponse({
+          historial,
+          mensajeUsuario: text,
+          contextoSistema: terminalMarker,
+          valoresExcel,
+        });
+        const terminalMessage = respuestaTerminal.mensaje_para_usuario;
+        const terminalUpdates = {
+          stage: 'cerrado',
+          lastBotResponseType: 'cierre_definitivo',
+          ...(conversation?.status === 'escalated' ? { status: 'pending' } : {}),
+        };
+
+        if (terminalMessage) {
+          await adapter.sendText(waId, terminalMessage);
+          terminalUpdates.mensajes = [
+            ...mensajesPrevios,
+            { direction: 'in',  text,            timestamp: new Date().toISOString() },
+            { direction: 'out', text: terminalMessage, timestamp: new Date().toISOString() },
+          ];
+          conversationManager.recordResponse(waId);
         }
+
+        conversationManager.createOrUpdateConversation(waId, terminalUpdates);
       }
       // Guardar coordenadas aunque la conversación esté cerrada y sincronizar PeritoLine
       if (locationCoords) {
@@ -366,48 +351,26 @@ async function processMessage(waId, messageObj) {
     conversationManager.recordUserMessage(waId);
 
     // Leer datos del siniestro y mensajes desde Excel
-    const userData        = conversation.userData || {};
-    let mensajesPrevios   = conversationManager.getMensajes(waId);
-
-    // Si el historial está vacío, reconstruir el mensaje inicial de la plantilla para
-    // que siempre aparezca en el PDF aunque el estado no se haya persistido correctamente.
-    if (mensajesPrevios.length === 0 && userData.aseguradora && nexp) {
-      mensajesPrevios = [{
-        direction: 'out',
-        text:      buildInitialTemplateText({ aseguradora: userData.aseguradora, nexp, causa: userData.causa || userData.observaciones || '' }),
-        timestamp: null,
-      }];
-    }
+    const {
+      userData,
+      mensajesPrevios,
+      historial,
+      valoresExcel,
+    } = buildAIConversationContext(conversation, nexp);
 
     const lastOutMsg      = [...mensajesPrevios].reverse().find(m => m?.direction === 'out') || null;
     const lastBotMessage  = lastOutMsg?.text || '';
+    const lastBotResponseType = String(conversation.lastBotResponseType || '').trim();
+    const locationRequestCount = Number(conversation.locationRequestCount || 0);
     const relationFromCurrent = extractRelationship(text);
     const peritoAttendeeContext = isPeritoAttendeePrompt(lastBotMessage) || isPeritoAttendeeMentionInUser(text);
-    const identityPromptContext = isIdentityRelationPrompt(lastBotMessage);
-    const identityConfirmedNow = identityPromptContext && isAffirmativeAck(text);
+    const identityConfirmedNow = lastBotResponseType === 'pregunta_identidad' && isAffirmativeAck(text);
     const relationAlreadyKnown = Boolean(
       (!peritoAttendeeContext && relationFromCurrent) ||
       (conversation.relacion && String(conversation.relacion).trim())
     );
     const estimateFromCurrent = detectEconomicEstimate(text);
     const estimateAlreadyKnown = Boolean((conversation.danos && String(conversation.danos).trim()) || estimateFromCurrent);
-
-    const valoresExcel = {
-      saludo:        new Date().getHours() < 12 ? 'Buenos días' : 'Buenas tardes',
-      aseguradora:   userData.aseguradora   || 'la aseguradora',
-      nexp,
-      causa:         userData.causa         || '',
-      observaciones: userData.observaciones || '',
-      nombre:        userData.nombre        || 'el titular',
-      direccion:     userData.direccion     || '',
-      cp:            userData.cp            || '',
-      municipio:     userData.municipio     || '',
-    };
-
-    const historial = mensajesPrevios.map(m => ({
-      role:  m.direction === 'in' ? 'user' : 'model',
-      parts: [{ text: m.text }],
-    }));
 
     // Enriquecer contexto con CP si se detecta
     const cpInfo = await lookupCP(text);
@@ -448,11 +411,8 @@ async function processMessage(waId, messageObj) {
     }
 
     // Reintento de petición de ubicación si el asegurado la ignoró
-    if (!locationCoords && conversation.status !== 'awaiting_location' && isLocationRequest(lastBotMessage)) {
-      const vecesYaPedida = mensajesPrevios.filter(
-        m => m.direction === 'out' && isLocationRequest(m.text || '')
-      ).length;
-      if (vecesYaPedida < 2) {
+    if (!locationCoords && conversation.status !== 'awaiting_location' && lastBotResponseType === 'peticion_ubicacion') {
+      if (locationRequestCount < 2) {
         contextoSistema += '\n[UBICACIÓN IGNORADA – REINTENTAR]: El asegurado ha respondido sin enviar la ubicación GPS. Vuelve a pedirla con el mismo mensaje exacto antes de continuar con el resumen.';
       } else {
         contextoSistema += '\n[UBICACIÓN IGNORADA – SEGUNDA VEZ]: El asegurado ha ignorado la petición de ubicación en dos ocasiones. Continúa con el resumen sin pedirla más e incluye «ubicacion_pendiente»: true en datos_extraidos.';
@@ -469,10 +429,7 @@ async function processMessage(waId, messageObj) {
       const estimateRef = estimateFromCurrent || String(conversation.danos || '').trim();
       contextoSistema += `\n[DATO YA INFORMADO]: Ya existe estimación económica (${estimateRef}). No la vuelvas a pedir y avanza al siguiente paso.`;
     }
-    if (
-      (lastBotMessage.toLowerCase().includes('si algún dato no es correcto') || lastBotMessage.toLowerCase().includes('si algun dato no es correcto')) &&
-      isAffirmativeAck(text)
-    ) {
+    if (lastBotResponseType === 'resumen_final' && isAffirmativeAck(text)) {
       contextoSistema += '\n[CONFIRMACIÓN RESUMEN]: El usuario confirma que los datos están correctos. Envía despedida final y marca estado_expediente="finalizado".';
     }
     if (identityConfirmedNow) {
@@ -552,53 +509,52 @@ async function processMessage(waId, messageObj) {
     }
 
     // ── Llamada a la IA ──────────────────────────────────────────────────
-    const respuestaIAraw = await procesarConIA(historial, text, contextoSistema, valoresExcel);
-    const respuestaIA = (respuestaIAraw && typeof respuestaIAraw === 'object') ? respuestaIAraw : {};
-    if (!respuestaIA.datos_extraidos || typeof respuestaIA.datos_extraidos !== 'object') {
-      respuestaIA.datos_extraidos = {};
-    }
-    const aiMessage = String(respuestaIA?.mensaje_para_usuario || '').trim();
-    if (!aiMessage) {
-      // Evita silencios cuando el modelo devuelve JSON válido pero mensaje vacío.
-      respuestaIA.mensaje_para_usuario = 'Perdón, no he podido procesar bien su mensaje. ¿Puede repetirlo, por favor?';
-      L.warn(`⚠️  IA devolvió mensaje vacío — se envía fallback de recuperación`);
-    } else {
-      // Normalizamos espacios para comparación/almacenado consistente.
-      respuestaIA.mensaje_para_usuario = aiMessage;
-    }
-
-    const locationRequestsSent = mensajesPrevios.filter(
-      m => m.direction === 'out' && isLocationRequest(m.text || '')
-    ).length;
-    const locationAlreadyShared = hasSharedLocation(conversation, locationCoords);
-    const aiWantsToSummarizeOrClose =
-      isSummaryValidationMessage(respuestaIA.mensaje_para_usuario) ||
-      isDefinitiveClosingMessage(respuestaIA.mensaje_para_usuario);
-
-    if (
-      !locationAlreadyShared &&
-      locationRequestsSent < 2 &&
-      aiWantsToSummarizeOrClose &&
-      !isLocationRequest(respuestaIA.mensaje_para_usuario)
-    ) {
-      const idiomaActivo = conversation.idioma || respuestaIA.datos_extraidos?.idioma_conversacion || 'es';
-      const digitalAceptado =
-        typeof respuestaIA.datos_extraidos?.acepta_videollamada === 'boolean'
-          ? respuestaIA.datos_extraidos.acepta_videollamada
-          : norm(conversation.digital || '') === 'si';
-
-      respuestaIA.mensaje_para_usuario = getLocationRequestMessage({
-        digitalAccepted: digitalAceptado,
-        language: idiomaActivo,
+    let respuestaIA = await requestAIResponse({
+      historial,
+      mensajeUsuario: text,
+      contextoSistema,
+      valoresExcel,
+    });
+    if (!respuestaIA.mensaje_para_usuario) {
+      L.warn('⚠️  IA devolvió mensaje vacío — se solicita una nueva redacción');
+      respuestaIA = await requestAIResponse({
+        historial,
+        mensajeUsuario: text,
+        contextoSistema,
+        valoresExcel,
+        extraContext: '[SISTEMA: REINTENTO_MENSAJE_VACIO]',
       });
-      respuestaIA.datos_extraidos.estado_expediente = digitalAceptado ? 'agendando' : 'valoracion';
-      respuestaIA.datos_extraidos.ubicacion_pendiente = false;
-      L.warn('⚠️  IA intentó resumir/cerrar sin pedir ubicación GPS — se fuerza la petición antes de continuar');
+    }
+
+    const locationAlreadyShared = hasSharedLocation(conversation, locationCoords);
+    let responseType = String(respuestaIA.datos_extraidos?.tipo_respuesta || 'normal').trim() || 'normal';
+    const aiWantsToSummarizeOrClose =
+      responseType === 'resumen_final' ||
+      responseType === 'cierre_definitivo';
+
+    if (
+      !locationAlreadyShared &&
+      locationRequestCount < 2 &&
+      aiWantsToSummarizeOrClose &&
+      responseType !== 'peticion_ubicacion'
+    ) {
+      const forcedLocationResponse = await requestAIResponse({
+        historial,
+        mensajeUsuario: text,
+        contextoSistema,
+        valoresExcel,
+        extraContext: '[SISTEMA: FORZAR_PEDIR_UBICACION]',
+      });
+      if (forcedLocationResponse.mensaje_para_usuario) {
+        respuestaIA = forcedLocationResponse;
+        responseType = String(respuestaIA.datos_extraidos?.tipo_respuesta || 'normal').trim() || 'normal';
+        L.warn('⚠️  IA intentó resumir/cerrar sin pedir ubicación GPS — se fuerza una nueva respuesta');
+      }
     }
 
     if (
       !locationAlreadyShared &&
-      locationRequestsSent >= 2 &&
+      locationRequestCount >= 2 &&
       aiWantsToSummarizeOrClose &&
       respuestaIA.datos_extraidos.ubicacion_pendiente !== true
     ) {
@@ -611,10 +567,21 @@ async function processMessage(waId, messageObj) {
       lastOutMsg &&
       lastOutMsg.text === respuestaIA.mensaje_para_usuario
     ) {
-      respuestaIA.mensaje_para_usuario = 'Perfecto, gracias. Para continuar, indíqueme por favor su nombre y su relación con la persona asegurada.';
-      respuestaIA.datos_extraidos.estado_expediente = 'identificacion';
-      L.warn(`⚠️  Bucle de identificación detectado tras "sí" del usuario — se fuerza avance de la conversación`);
+      const identityRetryResponse = await requestAIResponse({
+        historial,
+        mensajeUsuario: text,
+        contextoSistema,
+        valoresExcel,
+        extraContext: '[SISTEMA: NO_REPETIR_IDENTIDAD]',
+      });
+      if (identityRetryResponse.mensaje_para_usuario && identityRetryResponse.mensaje_para_usuario !== lastOutMsg.text) {
+        respuestaIA = identityRetryResponse;
+        responseType = String(respuestaIA.datos_extraidos?.tipo_respuesta || 'normal').trim() || 'normal';
+        L.warn('⚠️  Bucle de identificación detectado tras "sí" del usuario — se solicita una nueva respuesta');
+      }
     }
+
+    const hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
 
     // Persistir mensajes y datos extraídos en el Excel
     if (respuestaIA.mensaje_entendido) {
@@ -626,15 +593,18 @@ async function processMessage(waId, messageObj) {
         acepta_videollamada,
         preferencia_horaria,
         estado_expediente,
+        tipo_respuesta,
         idioma_conversacion,
         ubicacion_pendiente,
       } = respuestaIA.datos_extraidos || {};
 
       const excelUpdates = {
+        lastBotResponseType: tipo_respuesta || 'normal',
+        locationRequestCount: locationRequestCount,
         mensajes: [
           ...mensajesPrevios,
           { direction: 'in',  text, timestamp: new Date().toISOString() },
-          { direction: 'out', text: respuestaIA.mensaje_para_usuario, timestamp: new Date().toISOString() },
+          ...(hasOutgoingMessage ? [{ direction: 'out', text: respuestaIA.mensaje_para_usuario, timestamp: new Date().toISOString() }] : []),
         ],
       };
       const relacionInterlocutor = String(peritoAttendeeContext ? '' : (relationFromCurrent || relacion_contacto || '')).trim();
@@ -671,12 +641,18 @@ async function processMessage(waId, messageObj) {
       if (preferencia_horaria === 'mañana') excelUpdates.horario = 'Mañana';
       else if (preferencia_horaria === 'tarde') excelUpdates.horario = 'Tarde';
       if (locationCoords) excelUpdates.coordenadas = locationCoords;
+      if (tipo_respuesta === 'peticion_ubicacion') {
+        excelUpdates.locationRequestCount = locationRequestCount + 1;
+      } else if (locationCoords) {
+        excelUpdates.locationRequestCount = 0;
+      }
 
       // Gestión de standby de ubicación
       if (locationCoords && conversation.status === 'awaiting_location') {
         // GPS recibida mientras estaba en espera → desactivar standby
         excelUpdates.status = 'pending';
         excelUpdates.locationStandbyUntil = 0;
+        excelUpdates.locationRequestCount = 0;
         L.log(`📍 Ubicación recibida — standby de ubicación desactivado`);
       } else if (ubicacion_pendiente === true && !locationCoords && conversation.status !== 'awaiting_location') {
         // Asegurado indica que enviará la ubicación más tarde → activar standby
@@ -688,7 +664,12 @@ async function processMessage(waId, messageObj) {
 
       const nuevoStage = ESTADO_IA_TO_STAGE[estado_expediente];
       if (nuevoStage) {
-        if ((nuevoStage === 'finalizado' || nuevoStage === 'escalated') && !isDefinitiveClosingMessage(respuestaIA.mensaje_para_usuario)) {
+        if (!hasOutgoingMessage && nuevoStage === 'escalated') {
+          stageAplicado = nuevoStage;
+          excelUpdates.stage = nuevoStage;
+          excelUpdates.contacto = 'Sí';
+          L.warn('⚠️  La conversación se marca como escalada sin mensaje saliente por indisponibilidad de modelos');
+        } else if ((nuevoStage === 'finalizado' || nuevoStage === 'escalated') && tipo_respuesta !== 'cierre_definitivo') {
           L.warn(`⚠️  IA marcó "${estado_expediente}" sin mensaje terminal explícito; no se cierra aún`);
         } else {
           stageAplicado = nuevoStage;
@@ -782,6 +763,7 @@ async function processMessage(waId, messageObj) {
     // para no dejar la conversación en silencio.
     const RESP_DEDUP_MS = 60 * 1000;
     if (
+      hasOutgoingMessage &&
       lastOutMsg &&
       lastOutMsg.text === respuestaIA.mensaje_para_usuario &&
       Date.now() - new Date(lastOutMsg.timestamp).getTime() < RESP_DEDUP_MS
@@ -789,10 +771,13 @@ async function processMessage(waId, messageObj) {
       L.warn(`⚠️  Respuesta idéntica al mensaje previo (<60s) — se envía igualmente para evitar silencio`);
     }
 
-    const result = await adapter.sendText(waId, respuestaIA.mensaje_para_usuario);
-    L.log(`✅ Enviado (msgId: ${result?.messageId}) | entendido=${respuestaIA.mensaje_entendido}`);
-
-    conversationManager.recordResponse(waId);
+    if (hasOutgoingMessage) {
+      const result = await adapter.sendText(waId, respuestaIA.mensaje_para_usuario);
+      L.log(`✅ Enviado (msgId: ${result?.messageId}) | entendido=${respuestaIA.mensaje_entendido}`);
+      conversationManager.recordResponse(waId);
+    } else {
+      L.warn('⚠️  La IA no devolvió un mensaje saliente y no se envía texto desde código');
+    }
 
     // No cerramos aquí: stage "finalizado" permite una última respuesta segura
     // si el usuario vuelve a escribir. El paso a "cerrado" se hace en canProcess.
@@ -808,14 +793,10 @@ module.exports = {
   processMessage,
   // Exportadas para tests unitarios
   _test: {
-    isDefinitiveClosingMessage,
-    isSummaryValidationMessage,
     detectEconomicEstimate,
-    getLocationRequestMessage,
     hasSharedLocation,
     normalizeContactPhone,
     isAffirmativeAck,
-    isIdentityRelationPrompt,
     extractRelationship,
     analyzeAddressType,
   },

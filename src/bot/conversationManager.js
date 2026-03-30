@@ -24,6 +24,8 @@ const normalizeWaId = normalizePhone;
 const TECH_FIELDS = new Set([
   'status',
   'stage',
+  'lastBotResponseType',
+  'locationRequestCount',
   'attempts',
   'inactivityAttempts',
   'nextReminderAt',
@@ -68,6 +70,8 @@ function mergeConversation(baseExcel, state) {
     ...baseExcel,
     status: safeState.status || (safeState.stage === 'escalated' ? 'escalated' : 'pending'),
     stage: safeState.stage || 'consent',
+    lastBotResponseType: safeState.lastBotResponseType || '',
+    locationRequestCount: Number(safeState.locationRequestCount || 0),
     attempts: Number(safeState.attempts || 0),
     inactivityAttempts: Number(safeState.inactivityAttempts || 0),
     nextReminderAt: safeState.nextReminderAt ?? null,

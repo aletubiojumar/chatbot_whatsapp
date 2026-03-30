@@ -242,6 +242,12 @@ const schema = {
           type: SchemaType.STRING,
           enum: ['identificacion', 'valoracion', 'agendando', 'finalizado', 'escalado_humano'],
         },
+        tipo_respuesta: {
+          type: SchemaType.STRING,
+          enum: ['normal', 'pregunta_identidad', 'peticion_ubicacion', 'resumen_final', 'cierre_definitivo'],
+          description:
+            'Clasifica el mensaje saliente actual: usa "pregunta_identidad", "peticion_ubicacion", "resumen_final", "cierre_definitivo" o "normal".',
+        },
         idioma_conversacion: {
           type: SchemaType.STRING,
           description:
@@ -292,6 +298,20 @@ function buildPromptFinal(valoresExcel) {
 18. IDIOMA: Detecta el idioma de los mensajes del usuario y rellena SIEMPRE el campo "idioma_conversacion" con el código ISO 639-1. Responde SIEMPRE en el idioma del usuario, sin preguntar confirmación.
 19. RECHAZO DE CONSENTIMIENTO: Cuando el usuario rechace continuar antes de haber dado consentimiento, envía un breve mensaje de despedida y establece estado_expediente="escalado_humano". No insistas.
 20. RESPUESTA NEGATIVA A PREGUNTA DE IDENTIDAD: Si el usuario ya dio consentimiento y responde "no" a la pregunta de si es el asegurado, NO cierres la conversación. Pregunta quién es y qué relación tiene.
+21. MARCADORES TÉCNICOS DEL SISTEMA:
+   - Si aparece "[SISTEMA: MENSAJE_NO_COMPATIBLE", responde brevemente pidiendo que continúe por escrito. Si se trata de imágenes, vídeos o documentos, aplica además la regla del apartado "GESTIÓN DE IMÁGENES Y DOCUMENTOS".
+   - Si aparece "[SISTEMA: TERMINAL_FINALIZADO]", el expediente ya se cerró correctamente. No reabras la gestión; responde una sola vez de forma breve y coherente con la sección "Mensaje si vuelve a escribir". Mantén estado_expediente="finalizado".
+   - Si aparece "[SISTEMA: TERMINAL_ESCALADO]", el expediente ya fue derivado a humano. Responde una sola vez de forma breve indicando que el perito o el equipo continuará la gestión. Mantén estado_expediente="escalado_humano".
+   - Si aparece "[SISTEMA: FORZAR_PEDIR_UBICACION]", tu siguiente mensaje debe ser EXCLUSIVAMENTE la petición de ubicación del riesgo que corresponda según el tipo de intervención activo. No cierres ni resumas todavía.
+   - Si aparece "[SISTEMA: REINTENTO_MENSAJE_VACIO]", rehace la respuesta pendiente de forma breve, natural y no vacía, manteniendo el flujo actual.
+   - Si aparece "[SISTEMA: NO_REPETIR_IDENTIDAD]", el usuario ya confirmó la identidad. No repitas esa pregunta y pasa al siguiente dato pendiente.
+   - Si aparece "[SISTEMA: UBICACION_STANDBY_EXPIRADA]", la espera de ubicación ha vencido. Cierra de forma breve indicando que el perito continuará la gestión por otro medio y usa estado_expediente="escalado_humano".
+22. CAMPO "tipo_respuesta": rellénalo SIEMPRE.
+   - "pregunta_identidad": cuando tu mensaje principal sea confirmar si hablas con el asegurado o pedir la relación del interlocutor.
+   - "peticion_ubicacion": cuando solicites compartir la ubicación o GPS del riesgo.
+   - "resumen_final": cuando envíes el resumen previo a la confirmación final de datos.
+   - "cierre_definitivo": solo cuando envíes el cierre definitivo o la única respuesta permitida tras un expediente ya cerrado.
+   - "normal": para cualquier otro mensaje.
 `;
 
   const reglasReplaced = reglasControl
@@ -413,6 +433,7 @@ Devuelve EXCLUSIVAMENTE un JSON válido con esta estructura:
     "acepta_videollamada": false,
     "preferencia_horaria": "",
     "estado_expediente": "identificacion|valoracion|agendando|finalizado|escalado_humano",
+    "tipo_respuesta": "normal|pregunta_identidad|peticion_ubicacion|resumen_final|cierre_definitivo",
     "idioma_conversacion": "<código ISO 639-1 del idioma del usuario>"
   }
 }`,
@@ -458,7 +479,7 @@ Devuelve EXCLUSIVAMENTE un JSON válido con esta estructura:
 
 function buildSafeEscalationResponse() {
   return {
-    mensaje_para_usuario: 'El perito se pondrá en contacto con usted, un saludo.',
+    mensaje_para_usuario: '',
     mensaje_entendido: true,
     datos_extraidos: { estado_expediente: 'escalado_humano' },
   };
@@ -666,7 +687,7 @@ async function translateMessagesToSpanish(mensajes, idioma) {
   } else {
     await initIA();
     const model = client.getGenerativeModel({
-      model: currentModel(),
+      model: currentGeminiModel(),
       systemInstruction: systemPrompt,
       generationConfig: { responseMimeType: 'application/json', temperature: 0 },
     });

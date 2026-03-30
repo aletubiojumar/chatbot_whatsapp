@@ -8,75 +8,12 @@ require('dotenv').config({ path: require('path').join(__dirname, '../../.env') }
 
 const { _test } = require('../../src/bot/messageHandler');
 const {
-  isDefinitiveClosingMessage,
-  isSummaryValidationMessage,
   detectEconomicEstimate,
-  getLocationRequestMessage,
   hasSharedLocation,
   normalizeContactPhone,
   isAffirmativeAck,
-  isIdentityRelationPrompt,
   extractRelationship,
 } = _test;
-
-// ── isDefinitiveClosingMessage ───────────────────────────────────────────────
-
-describe('isDefinitiveClosingMessage', () => {
-  test('mensaje de cierre típico → true', () => {
-    assert.equal(
-      isDefinitiveClosingMessage('Perfecto. Con esto finalizamos la gestión por este medio. Trasladamos la información al perito.'),
-      true
-    );
-  });
-
-  test('mensaje con "le contactará el perito" → true', () => {
-    assert.equal(isDefinitiveClosingMessage('El expediente ya está en gestión con el perito. Le contactará el perito a la mayor brevedad.'), true);
-  });
-
-  test('mensaje de resumen con "si algún dato no es correcto" → NO cierre', () => {
-    assert.equal(
-      isDefinitiveClosingMessage('Si algún dato no es correcto, indíquenoslo para ajustarlo.'),
-      false
-    );
-  });
-
-  test('mensaje vacío → false', () => {
-    assert.equal(isDefinitiveClosingMessage(''), false);
-  });
-
-  test('mensaje conversacional normal → false', () => {
-    assert.equal(isDefinitiveClosingMessage('¿Cuál es la dirección exacta del siniestro?'), false);
-  });
-
-  test('mensaje de escalado seguro → true', () => {
-    assert.equal(
-      isDefinitiveClosingMessage('Su caso está siendo atendido por nuestro equipo. Le contactaremos en breve. Gracias por su paciencia.'),
-      true
-    );
-  });
-});
-
-// ── isSummaryValidationMessage ───────────────────────────────────────────────
-
-describe('isSummaryValidationMessage', () => {
-  test('detecta cabecera de resumen final → true', () => {
-    assert.equal(
-      isSummaryValidationMessage('Le indico los datos que tenemos para comprobar que están correctos:'),
-      true
-    );
-  });
-
-  test('detecta cola de validación del resumen → true', () => {
-    assert.equal(
-      isSummaryValidationMessage('Si algún dato no es correcto, indíquenoslo para ajustarlo.'),
-      true
-    );
-  });
-
-  test('mensaje normal → false', () => {
-    assert.equal(isSummaryValidationMessage('¿Será usted misma quien atienda al perito?'), false);
-  });
-});
 
 // ── detectEconomicEstimate ───────────────────────────────────────────────────
 
@@ -138,24 +75,6 @@ describe('normalizeContactPhone', () => {
   });
 });
 
-// ── ubicación ────────────────────────────────────────────────────────────────
-
-describe('getLocationRequestMessage', () => {
-  test('mensaje presencial en español coincide con prompt', () => {
-    assert.equal(
-      getLocationRequestMessage({ digitalAccepted: false, language: 'es' }),
-      'Rogamos nos pueda mandar la ubicación del riesgo para facilitársela al perito y pueda llegar con facilidad. Gracias.'
-    );
-  });
-
-  test('mensaje digital en español coincide con prompt', () => {
-    assert.equal(
-      getLocationRequestMessage({ digitalAccepted: true, language: 'es' }),
-      'Rogamos nos pueda mandar la ubicación del riesgo para concretar la dirección con exactitud. Gracias.'
-    );
-  });
-});
-
 describe('hasSharedLocation', () => {
   test('true si el mensaje actual trae coordenadas', () => {
     assert.equal(hasSharedLocation({}, '36.72,-4.42'), true);
@@ -183,31 +102,6 @@ describe('isAffirmativeAck', () => {
 
   test('vacío → false', () => {
     assert.equal(isAffirmativeAck(''), false);
-  });
-});
-
-// ── isIdentityRelationPrompt ──────────────────────────────────────────────────
-
-describe('isIdentityRelationPrompt', () => {
-  test('detecta pregunta típica de relación con entidad del expediente', () => {
-    assert.equal(
-      isIdentityRelationPrompt('Gracias. Para continuar, ¿usted está relacionado con UNION FAM. MALACITANA DE INVER, la entidad indicada en el expediente?'),
-      true
-    );
-  });
-
-  test('detecta variante sobre si es el asegurado', () => {
-    assert.equal(
-      isIdentityRelationPrompt('¿Es usted el asegurado de este expediente?'),
-      true
-    );
-  });
-
-  test('mensaje de daños no es prompt de identidad', () => {
-    assert.equal(
-      isIdentityRelationPrompt('¿Puede indicarme una estimación de los daños?'),
-      false
-    );
   });
 });
 

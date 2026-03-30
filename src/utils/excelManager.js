@@ -64,6 +64,8 @@ const STATE_FIELDS = {
   waId:               'waId',
   status:             'status',
   stage:              'stage',
+  lastBotResponseType:'lastBotResponseType',
+  locationRequestCount:'locationRequestCount',
   attempts:           'attempts',
   inactivityAttempts: 'inactivityAttempts',
   nextReminderAt:     'nextReminderAt',
@@ -169,8 +171,9 @@ function migrateStateSheetToFile() {
       setCellValue(dstWs, dstRow, dstHeaders[STATE_FIELDS.waId],   next.waId);
       setCellValue(dstWs, dstRow, dstHeaders[STATE_FIELDS.status],  String(next.status  || 'pending'));
       setCellValue(dstWs, dstRow, dstHeaders[STATE_FIELDS.stage],   String(next.stage   || 'consent'));
+      setCellValue(dstWs, dstRow, dstHeaders[STATE_FIELDS.lastBotResponseType], String(next.lastBotResponseType || ''));
       for (const f of [STATE_FIELDS.attempts, STATE_FIELDS.inactivityAttempts,
-        STATE_FIELDS.nextReminderAt, STATE_FIELDS.lastUserMessageAt,
+        STATE_FIELDS.locationRequestCount, STATE_FIELDS.nextReminderAt, STATE_FIELDS.lastUserMessageAt,
         STATE_FIELDS.lastReminderAt, STATE_FIELDS.lastMessageAt]) {
         const v = next[f];
         if (v === null || v === undefined || v === '') setCellValue(dstWs, dstRow, dstHeaders[f], '');
@@ -365,6 +368,8 @@ function rowToState(ws, headers, r) {
     waId,
     status: status || (stage === 'escalated' ? 'escalated' : 'pending'),
     stage: stage || 'consent',
+    lastBotResponseType: getCellStr(ws, r, headers[STATE_FIELDS.lastBotResponseType]).trim() || '',
+    locationRequestCount: getCellNum(ws, r, headers[STATE_FIELDS.locationRequestCount]) || 0,
     attempts: getCellNum(ws, r, headers[STATE_FIELDS.attempts]) || 0,
     inactivityAttempts: getCellNum(ws, r, headers[STATE_FIELDS.inactivityAttempts]) || 0,
     nextReminderAt: getCellNum(ws, r, headers[STATE_FIELDS.nextReminderAt]),
@@ -558,8 +563,10 @@ function upsertStateInExcel(waId, patch = {}) {
     setCellValue(ws, row, headers[STATE_FIELDS.waId], next.waId);
     setCellValue(ws, row, headers[STATE_FIELDS.status], String(next.status || 'pending'));
     setCellValue(ws, row, headers[STATE_FIELDS.stage], String(next.stage || 'consent'));
+    setCellValue(ws, row, headers[STATE_FIELDS.lastBotResponseType], String(next.lastBotResponseType || ''));
 
     const numericFields = [
+      STATE_FIELDS.locationRequestCount,
       STATE_FIELDS.attempts,
       STATE_FIELDS.inactivityAttempts,
       STATE_FIELDS.nextReminderAt,
@@ -789,8 +796,10 @@ function applyPatches(waId, techPatch = {}, excelPatch = {}) {
     setCellValue(stateWs, stateRow, stateHeaders[STATE_FIELDS.waId],   next.waId);
     setCellValue(stateWs, stateRow, stateHeaders[STATE_FIELDS.status],  String(next.status  || 'pending'));
     setCellValue(stateWs, stateRow, stateHeaders[STATE_FIELDS.stage],   String(next.stage   || 'consent'));
+    setCellValue(stateWs, stateRow, stateHeaders[STATE_FIELDS.lastBotResponseType], String(next.lastBotResponseType || ''));
 
     const numericStateFields = [
+      STATE_FIELDS.locationRequestCount,
       STATE_FIELDS.attempts,
       STATE_FIELDS.inactivityAttempts,
       STATE_FIELDS.nextReminderAt,

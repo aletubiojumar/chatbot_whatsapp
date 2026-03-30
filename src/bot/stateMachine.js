@@ -39,12 +39,12 @@ const TRANSITIONS = {
   escalated:      [],
 };
 
-// ── Respuestas seguras para estados terminales ────────────────────────────
+// ── Comportamiento seguro para estados terminales ──────────────────────────
 
-const TERMINAL_RESPONSES = {
-  finalizado: 'El expediente ya está en gestión con el perito. Se pondrá en contacto con usted. Finalizamos la comunicación por este medio.',
-  cerrado:    null, // silencio total
-  escalated:  'Su caso está siendo atendido por nuestro equipo. Le contactaremos en breve. Gracias por su paciencia.',
+const TERMINAL_BEHAVIOR = {
+  finalizado: 'reply_once_then_close',
+  cerrado:    'silent',
+  escalated:  'reply_once_then_close',
 };
 
 // ── API pública ───────────────────────────────────────────────────────────
@@ -53,10 +53,10 @@ const TERMINAL_RESPONSES = {
  * Determina si se puede procesar un mensaje entrante para esta conversación.
  *
  * @param {{ stage?: string, status?: string } | null} conversation
- * @returns {{ ok: boolean, reason?: string, response?: string }}
+ * @returns {{ ok: boolean, reason?: string, aiBehavior?: string }}
  *   ok       = true si el mensaje puede procesarse
  *   reason   = por qué fue bloqueado (para logging)
- *   response = mensaje de respuesta seguro a enviar al usuario (si aplica)
+ *   aiBehavior = comportamiento técnico esperado del handler
  */
 function canProcess(conversation) {
   if (!conversation) {
@@ -67,7 +67,7 @@ function canProcess(conversation) {
     return {
       ok: false,
       reason: 'terminal_status',
-      response: TERMINAL_RESPONSES.escalated,
+      aiBehavior: TERMINAL_BEHAVIOR.escalated,
     };
   }
 
@@ -75,7 +75,7 @@ function canProcess(conversation) {
     return {
       ok: false,
       reason: 'terminal_stage',
-      response: TERMINAL_RESPONSES[conversation.stage],
+      aiBehavior: TERMINAL_BEHAVIOR[conversation.stage],
     };
   }
 
@@ -98,7 +98,7 @@ module.exports = {
   STAGES,
   TRANSITIONS,
   TERMINAL_STAGES,
-  TERMINAL_RESPONSES,
+  TERMINAL_BEHAVIOR,
   canProcess,
   isValidTransition,
 };

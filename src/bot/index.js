@@ -136,14 +136,13 @@ app.post('/webhook', async (req, res) => {
   const msg = adapter.normalizeIncoming(body);
   if (!msg) return; // status updates, notificaciones, etc.
 
-  // Solo procesamos texto y ubicación; el resto → respuesta informativa
+  // Solo procesamos texto y ubicación; el resto se transforma en una señal
+  // técnica para que la IA responda siguiendo el prompt.
   if (msg.type !== 'text' && msg.type !== 'location') {
+    const originalType = msg.type;
     log.info(`📎 Tipo de mensaje no soportado [${msg.type}] de ${log.maskPhone(msg.userId)}`);
-    await adapter.sendText(
-      msg.userId,
-      'Lo siento, por ahora solo puedo procesar mensajes de texto. Por favor, escríbame su respuesta.'
-    ).catch(() => {});
-    return;
+    msg.type = 'text';
+    msg.text = `[SISTEMA: MENSAJE_NO_COMPATIBLE tipo=${originalType || 'desconocido'}]`;
   }
 
   // Marcar como leído
