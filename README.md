@@ -247,6 +247,8 @@ POST /webhook
  12. pdfGenerator          → si conversación terminada, genera PDF de transcripción
 ```
 
+Además del `stage` terminal clásico, el backend aplica un guardarraíl de negocio: ignora cierres prematuros (`finalizado` / `escalated`) cuando la conversación sigue en `consent` o `identification`, salvo rechazo explícito del consentimiento o petición clara de atención humana.
+
 ### Logs en tiempo real (consola)
 
 Cada mensaje procesado imprime un separador con el número de expediente para facilitar el seguimiento de conversaciones simultáneas:
@@ -256,6 +258,8 @@ Cada mensaje procesado imprime un separador con el número de expediente para fa
 📨 [880337292] "Hola, soy el asegurado"
 ─────────────────────────────────────────────────────────────────
 [880337292] 🔗 Primera respuesta → sync PeritoLine iniciado
+[880337292] 🧠 IA datos_extraidos: {"estado_expediente":"valoracion","tipo_respuesta":"normal"}
+[880337292] 🧠 IA tipo=normal estado=valoracion
 [880337292] 🤖 IA [valoracion]: "Buenos días, le confirmo..."
 [880337292] ✅ Enviado (msgId: wamid.xxx) | entendido=true
 ```
@@ -287,6 +291,8 @@ La IA devuelve siempre un objeto JSON con este esquema:
 ```
 
 `ubicacion_pendiente: true` indica que el asegurado ha reconocido la petición de ubicación pero no puede enviarla en ese momento. Activa el **standby de ubicación** (ver Schedulers).
+
+`tipo_respuesta` y `estado_expediente` no se aceptan a ciegas: el backend los usa como señal estructurada, pero puede bloquear un cierre terminal si entra demasiado pronto en el flujo.
 
 ### Cadena de fallback de IA
 
@@ -537,7 +543,7 @@ npm test
 | `tests/unit/stateMachine.test.js` | `canProcess()`, `isValidTransition()`, stages terminales |
 | `tests/unit/dedup.test.js` | `isDuplicate()` — deduplicación por messageId |
 | `tests/unit/rateLimiter.test.js` | `checkLimit()` — límites por usuario y global |
-| `tests/unit/messageHandlerUtils.test.js` | Utilidades del handler: estimación económica, normalización de teléfono, confirmación afirmativa, extracción de relación, preferencia horaria |
+| `tests/unit/messageHandlerUtils.test.js` | Utilidades del handler: estimación económica, normalización de teléfono, confirmación afirmativa/negativa, extracción de relación, preferencia horaria, intención de escalado humano y bloqueo de cierres prematuros |
 | `tests/unit/schedulerUtils.test.js` | `nextBusinessHoursStart()` — cálculo del próximo período laboral |
 
 ---
@@ -635,6 +641,13 @@ log.debug('payload completo:', body);  // solo visible con LOG_LEVEL=debug
 - Bloquea el flujo normal si el stage es terminal
 - Permite una última respuesta segura generada por IA cuando el expediente está `finalizado` o `escalated`, y después lo deja en `cerrado`
 - `isValidTransition(from, to)` valida transiciones antes de persistirlas
+
+### Guardarraíles del handler (`src/bot/messageHandler.js`)
+
+- Registra en log el JSON real de `datos_extraidos` devuelto por la IA para poder diagnosticar diferencias entre entornos y modelos
+- Bloquea cierres terminales tempranos en `consent` e `identification`
+- Permite escalado temprano solo si el usuario rechaza continuar o pide explícitamente atención humana/llamada
+- Mantiene la conversación abierta si la IA intenta cerrar sin esas condiciones
 
 ### Fallback de modelos IA (`src/ai/aiModel.js`)
 

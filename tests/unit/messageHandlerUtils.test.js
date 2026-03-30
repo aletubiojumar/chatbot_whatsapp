@@ -12,9 +12,12 @@ const {
   hasSharedLocation,
   normalizeContactPhone,
   isAffirmativeAck,
+  isNegativeAck,
+  isExplicitHumanEscalationIntent,
   extractRelationship,
   normalizeSchedulePreference,
   shouldAssumeDigitalAcceptance,
+  shouldBlockEarlyTerminalStage,
 } = _test;
 
 // ── detectEconomicEstimate ───────────────────────────────────────────────────
@@ -107,6 +110,30 @@ describe('isAffirmativeAck', () => {
   });
 });
 
+describe('isNegativeAck', () => {
+  for (const input of ['no', 'negativo', 'prefiero no', 'rechazo']) {
+    test(`"${input}" → true`, () => assert.equal(isNegativeAck(input), true));
+  }
+
+  test('"sí" → false', () => {
+    assert.equal(isNegativeAck('sí'), false);
+  });
+});
+
+describe('isExplicitHumanEscalationIntent', () => {
+  test('detecta petición explícita de llamada', () => {
+    assert.equal(isExplicitHumanEscalationIntent('Prefiero que me llamen por teléfono'), true);
+  });
+
+  test('detecta petición de hablar con una persona', () => {
+    assert.equal(isExplicitHumanEscalationIntent('Quiero hablar con una persona'), true);
+  });
+
+  test('respuesta neutra → false', () => {
+    assert.equal(isExplicitHumanEscalationIntent('sí'), false);
+  });
+});
+
 // ── extractRelationship ──────────────────────────────────────────────────────
 
 describe('extractRelationship', () => {
@@ -175,6 +202,62 @@ describe('shouldAssumeDigitalAcceptance', () => {
       extractedDigital: undefined,
       existingDigital: '',
       preferredSchedule: '',
+    }), false);
+  });
+});
+
+describe('shouldBlockEarlyTerminalStage', () => {
+  test('bloquea finalizado en consent', () => {
+    assert.equal(shouldBlockEarlyTerminalStage({
+      currentStage: 'consent',
+      nextStage: 'finalizado',
+      userText: 'sí',
+      hasOutgoingMessage: true,
+    }), true);
+  });
+
+  test('bloquea escalated en identification si no hay motivo explícito', () => {
+    assert.equal(shouldBlockEarlyTerminalStage({
+      currentStage: 'identification',
+      nextStage: 'escalated',
+      userText: 'sí',
+      hasOutgoingMessage: true,
+    }), true);
+  });
+
+  test('permite escalated en consent si el usuario rechaza continuar', () => {
+    assert.equal(shouldBlockEarlyTerminalStage({
+      currentStage: 'consent',
+      nextStage: 'escalated',
+      userText: 'no',
+      hasOutgoingMessage: true,
+    }), false);
+  });
+
+  test('permite escalated en stage temprano si pide atención humana', () => {
+    assert.equal(shouldBlockEarlyTerminalStage({
+      currentStage: 'identification',
+      nextStage: 'escalated',
+      userText: 'Prefiero hablar con una persona',
+      hasOutgoingMessage: true,
+    }), false);
+  });
+
+  test('no bloquea escalado técnico sin mensaje saliente', () => {
+    assert.equal(shouldBlockEarlyTerminalStage({
+      currentStage: 'consent',
+      nextStage: 'escalated',
+      userText: 'sí',
+      hasOutgoingMessage: false,
+    }), false);
+  });
+
+  test('no bloquea finalizado fuera de stages tempranos', () => {
+    assert.equal(shouldBlockEarlyTerminalStage({
+      currentStage: 'agendando',
+      nextStage: 'finalizado',
+      userText: 'mañana',
+      hasOutgoingMessage: true,
     }), false);
   });
 });

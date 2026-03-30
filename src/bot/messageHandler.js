@@ -52,6 +52,45 @@ function isAffirmativeAck(text) {
   return /^(si|sí|ok|vale|perfecto|correcto|todo ok|todo correcto|de acuerdo|confirmado)$/.test(t);
 }
 
+function isNegativeAck(text) {
+  const t = norm(text);
+  return /^(no|nop|negativo|mejor no|prefiero no|no quiero|no deseo continuar|no acepto|rechazo)$/.test(t);
+}
+
+function isExplicitHumanEscalationIntent(text) {
+  const t = norm(text);
+  return (
+    t.includes('hablar con una persona') ||
+    t.includes('hablar con alguien') ||
+    t.includes('persona real') ||
+    t.includes('atencion humana') ||
+    t.includes('atencion telefonica') ||
+    t.includes('que me llamen') ||
+    t.includes('que me llame') ||
+    t.includes('prefiero que me llamen') ||
+    t.includes('prefiero hablar con') ||
+    t.includes('quiero hablar con') ||
+    t.includes('quiero que me llamen') ||
+    t.includes('llamadme') ||
+    t.includes('llamame') ||
+    t.includes('llamenme') ||
+    (t.includes('humano')) ||
+    (t.includes('agente')) ||
+    (t.includes('operador')) ||
+    (t.includes('por telefono') && !isAffirmativeAck(text))
+  );
+}
+
+function shouldBlockEarlyTerminalStage({ currentStage, nextStage, userText, hasOutgoingMessage }) {
+  if (!hasOutgoingMessage) return false;
+  if (!['consent', 'identification'].includes(String(currentStage || '').trim())) return false;
+  if (nextStage === 'finalizado') return true;
+  if (nextStage !== 'escalated') return false;
+  if (currentStage === 'consent' && isNegativeAck(userText)) return false;
+  if (isExplicitHumanEscalationIntent(userText)) return false;
+  return true;
+}
+
 function hasSharedLocation(conversation, currentLocationCoords) {
   return Boolean(String(currentLocationCoords || conversation?.coordenadas || '').trim());
 }
@@ -507,6 +546,9 @@ async function processMessage(waId, messageObj) {
       }
     }
 
+    L.log(`🧠 IA datos_extraidos: ${JSON.stringify(respuestaIA.datos_extraidos || {})}`);
+    L.log(`🧠 IA tipo=${responseType} estado=${String(respuestaIA.datos_extraidos?.estado_expediente || '').trim()}`);
+
     const hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
 
     // Persistir mensajes y datos extraídos en el Excel
@@ -604,6 +646,13 @@ async function processMessage(waId, messageObj) {
           excelUpdates.stage = nuevoStage;
           excelUpdates.contacto = 'Sí';
           L.warn('⚠️  La conversación se marca como escalada sin mensaje saliente por indisponibilidad de modelos');
+        } else if (shouldBlockEarlyTerminalStage({
+          currentStage: conversation.stage,
+          nextStage: nuevoStage,
+          userText: text,
+          hasOutgoingMessage,
+        })) {
+          L.warn(`⚠️  Cierre terminal bloqueado por backend en stage temprano (${conversation.stage})`);
         } else if ((nuevoStage === 'finalizado' || nuevoStage === 'escalated') && tipo_respuesta !== 'cierre_definitivo') {
           L.warn(`⚠️  IA marcó "${estado_expediente}" sin mensaje terminal explícito; no se cierra aún`);
         } else {
@@ -721,9 +770,12 @@ module.exports = {
     hasSharedLocation,
     normalizeContactPhone,
     isAffirmativeAck,
+    isNegativeAck,
+    isExplicitHumanEscalationIntent,
     extractRelationship,
     analyzeAddressType,
     normalizeSchedulePreference,
     shouldAssumeDigitalAcceptance,
+    shouldBlockEarlyTerminalStage,
   },
 };
