@@ -2,7 +2,7 @@
 const conversationManager = require('./conversationManager');
 const { procesarConIA, translateMessagesToSpanish } = require('../ai/aiModel');
 const adapter             = require('../channels/whatsappAdapter');
-const { canProcess }      = require('./stateMachine');
+const { canProcess, isValidTransition } = require('./stateMachine');
 const { triggerEncargoSync } = require('./peritolineAutoSync');
 const { generateConversationPdf } = require('../utils/pdfGenerator');
 const { buildInitialTemplateText } = require('./templateSender');
@@ -11,8 +11,20 @@ const axios = require('axios');
 
 // Mapeo entre los valores que devuelve la IA y los stages internos
 const ESTADO_IA_TO_STAGE = {
+  identificacion:  'identification',
+  valoracion:      'valoracion',
+  agendando:       'agendando',
   finalizado:      'finalizado',
   escalado_humano: 'escalated',
+};
+
+const STAGE_TO_ESTADO_IA = {
+  consent:        'identificacion',
+  identification: 'identificacion',
+  valoracion:     'valoracion',
+  agendando:      'agendando',
+  finalizado:     'finalizado',
+  escalated:      'escalado_humano',
 };
 
 // Cache de CP → localidad para no repetir peticiones
@@ -89,6 +101,18 @@ function shouldBlockEarlyTerminalStage({ currentStage, nextStage, userText, hasO
   if (currentStage === 'consent' && isNegativeAck(userText)) return false;
   if (isExplicitHumanEscalationIntent(userText)) return false;
   return true;
+}
+
+function canApplyStageTransition(currentStage, nextStage) {
+  const from = String(currentStage || 'consent').trim() || 'consent';
+  const to = String(nextStage || '').trim();
+  if (!to) return false;
+  if (from === to) return true;
+  return isValidTransition(from, to);
+}
+
+function getNonTerminalAiStateForStage(stage) {
+  return STAGE_TO_ESTADO_IA[String(stage || 'consent').trim()] || 'identificacion';
 }
 
 function hasSharedLocation(conversation, currentLocationCoords) {
@@ -546,10 +570,57 @@ async function processMessage(waId, messageObj) {
       }
     }
 
+    let hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
+    let proposedStage = ESTADO_IA_TO_STAGE[String(respuestaIA.datos_extraidos?.estado_expediente || '').trim()];
+
+    if (shouldBlockEarlyTerminalStage({
+      currentStage: conversation.stage,
+      nextStage: proposedStage,
+      userText: text,
+      hasOutgoingMessage,
+    })) {
+      const blockedStageRetry = await requestAIResponse({
+        historial,
+        mensajeUsuario: text,
+        contextoSistema,
+        valoresExcel,
+        extraContext: [
+          '[SISTEMA: CIERRE_TEMPRANO_BLOQUEADO]',
+          'Está prohibido cerrar o escalar la conversación en este punto del flujo.',
+          'No envíes despedida ni mensaje terminal.',
+          'Continúa con el siguiente dato pendiente y usa un estado no terminal: "identificacion", "valoracion" o "agendando".',
+        ].join('\n'),
+      });
+
+      if (blockedStageRetry.mensaje_para_usuario) {
+        respuestaIA = blockedStageRetry;
+        responseType = String(respuestaIA.datos_extraidos?.tipo_respuesta || 'normal').trim() || 'normal';
+        hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
+        proposedStage = ESTADO_IA_TO_STAGE[String(respuestaIA.datos_extraidos?.estado_expediente || '').trim()];
+        L.warn(`⚠️  La IA intentó cerrar demasiado pronto en stage ${conversation.stage} — se solicitó una nueva respuesta`);
+      }
+    }
+
+    if (shouldBlockEarlyTerminalStage({
+      currentStage: conversation.stage,
+      nextStage: proposedStage,
+      userText: text,
+      hasOutgoingMessage,
+    })) {
+      if (!respuestaIA.datos_extraidos || typeof respuestaIA.datos_extraidos !== 'object') {
+        respuestaIA.datos_extraidos = {};
+      }
+      respuestaIA.mensaje_para_usuario = '';
+      respuestaIA.datos_extraidos.estado_expediente = getNonTerminalAiStateForStage(conversation.stage);
+      respuestaIA.datos_extraidos.tipo_respuesta = 'normal';
+      responseType = 'normal';
+      proposedStage = ESTADO_IA_TO_STAGE[respuestaIA.datos_extraidos.estado_expediente];
+      hasOutgoingMessage = false;
+      L.warn(`⚠️  Respuesta terminal prematura descartada por backend en stage ${conversation.stage}`);
+    }
+
     L.log(`🧠 IA datos_extraidos: ${JSON.stringify(respuestaIA.datos_extraidos || {})}`);
     L.log(`🧠 IA tipo=${responseType} estado=${String(respuestaIA.datos_extraidos?.estado_expediente || '').trim()}`);
-
-    const hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
 
     // Persistir mensajes y datos extraídos en el Excel
     if (respuestaIA.mensaje_entendido) {
@@ -641,25 +712,24 @@ async function processMessage(waId, messageObj) {
 
       const nuevoStage = ESTADO_IA_TO_STAGE[estado_expediente];
       if (nuevoStage) {
-        if (!hasOutgoingMessage && nuevoStage === 'escalated') {
+        if (!canApplyStageTransition(conversation.stage, nuevoStage)) {
+          L.warn(`⚠️  Transición de stage ignorada: ${conversation.stage} → ${nuevoStage}`);
+        } else if (!hasOutgoingMessage && nuevoStage === 'escalated') {
           stageAplicado = nuevoStage;
           excelUpdates.stage = nuevoStage;
           excelUpdates.contacto = 'Sí';
           L.warn('⚠️  La conversación se marca como escalada sin mensaje saliente por indisponibilidad de modelos');
-        } else if (shouldBlockEarlyTerminalStage({
-          currentStage: conversation.stage,
-          nextStage: nuevoStage,
-          userText: text,
-          hasOutgoingMessage,
-        })) {
-          L.warn(`⚠️  Cierre terminal bloqueado por backend en stage temprano (${conversation.stage})`);
         } else if ((nuevoStage === 'finalizado' || nuevoStage === 'escalated') && tipo_respuesta !== 'cierre_definitivo') {
           L.warn(`⚠️  IA marcó "${estado_expediente}" sin mensaje terminal explícito; no se cierra aún`);
         } else {
           stageAplicado = nuevoStage;
           excelUpdates.stage = nuevoStage;
-          excelUpdates.contacto = 'Sí'; // Conversación terminada con el asegurado
-          L.log(`🔄 Stage → ${nuevoStage}`);
+          if (nuevoStage === 'finalizado' || nuevoStage === 'escalated') {
+            excelUpdates.contacto = 'Sí'; // Conversación terminada con el asegurado
+          }
+          if (conversation.stage !== nuevoStage) {
+            L.log(`🔄 Stage → ${nuevoStage}`);
+          }
         }
       }
 
@@ -772,6 +842,8 @@ module.exports = {
     isAffirmativeAck,
     isNegativeAck,
     isExplicitHumanEscalationIntent,
+    canApplyStageTransition,
+    getNonTerminalAiStateForStage,
     extractRelationship,
     analyzeAddressType,
     normalizeSchedulePreference,

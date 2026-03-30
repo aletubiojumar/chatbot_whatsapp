@@ -14,6 +14,8 @@ const {
   isAffirmativeAck,
   isNegativeAck,
   isExplicitHumanEscalationIntent,
+  canApplyStageTransition,
+  getNonTerminalAiStateForStage,
   extractRelationship,
   normalizeSchedulePreference,
   shouldAssumeDigitalAcceptance,
@@ -259,5 +261,41 @@ describe('shouldBlockEarlyTerminalStage', () => {
       userText: 'mañana',
       hasOutgoingMessage: true,
     }), false);
+  });
+});
+
+describe('canApplyStageTransition', () => {
+  test('permite consent → identification', () => {
+    assert.equal(canApplyStageTransition('consent', 'identification'), true);
+  });
+
+  test('permite identification → valoracion', () => {
+    assert.equal(canApplyStageTransition('identification', 'valoracion'), true);
+  });
+
+  test('permite mantener el mismo stage', () => {
+    assert.equal(canApplyStageTransition('identification', 'identification'), true);
+  });
+
+  test('bloquea saltos inválidos', () => {
+    assert.equal(canApplyStageTransition('consent', 'finalizado'), false);
+  });
+});
+
+describe('getNonTerminalAiStateForStage', () => {
+  test('consent → identificacion', () => {
+    assert.equal(getNonTerminalAiStateForStage('consent'), 'identificacion');
+  });
+
+  test('identification → identificacion', () => {
+    assert.equal(getNonTerminalAiStateForStage('identification'), 'identificacion');
+  });
+
+  test('valoracion → valoracion', () => {
+    assert.equal(getNonTerminalAiStateForStage('valoracion'), 'valoracion');
+  });
+
+  test('agendando → agendando', () => {
+    assert.equal(getNonTerminalAiStateForStage('agendando'), 'agendando');
   });
 });
