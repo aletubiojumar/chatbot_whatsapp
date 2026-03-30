@@ -9,25 +9,56 @@ let client = null;
 // ── Gestión de modelos con fallback ──────────────────────────────────────────
 
 const MODEL_RESET_MS = 5 * 60 * 1000; // intentar volver al principal cada 5 min
-let activeModelIdx = 0;
-let lastSwitchAt = 0;
+let activeGeminiModelIdx = 0;
+let lastGeminiSwitchAt = 0;
+let activeOpenAIModelIdx = 0;
+let lastOpenAISwitchAt = 0;
 
-function getModelList() {
-  const primary = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-  const fallbacks = (process.env.GEMINI_MODEL_FALLBACKS || 'gemini-2.5-flash-lite,gemini-2.5-pro')
+function parseFallbackModels(rawValue = '') {
+  return String(rawValue || '')
     .split(',')
     .map(m => m.trim())
     .filter(Boolean);
-  return [primary, ...fallbacks];
 }
 
-function currentModel() {
-  const models = getModelList();
-  if (activeModelIdx > 0 && Date.now() - lastSwitchAt > MODEL_RESET_MS) {
-    activeModelIdx = 0;
-    console.log(`🔄 Volviendo al modelo principal: ${models[0]}`);
+function uniqueModels(models = []) {
+  return [...new Set(
+    models
+      .map(m => String(m || '').trim())
+      .filter(Boolean)
+  )];
+}
+
+function getGeminiModelList() {
+  const primary = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  const fallbacks = parseFallbackModels(
+    process.env.GEMINI_MODEL_FALLBACKS || 'gemini-2.5-flash-lite,gemini-2.5-pro'
+  );
+  return uniqueModels([primary, ...fallbacks]);
+}
+
+function getOpenAIModelList() {
+  const primary = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+  const fallbacks = parseFallbackModels(process.env.OPENAI_MODEL_FALLBACKS || '');
+  return uniqueModels([primary, ...fallbacks]);
+}
+
+function currentGeminiModel() {
+  const models = getGeminiModelList();
+  if (activeGeminiModelIdx > 0 && Date.now() - lastGeminiSwitchAt > MODEL_RESET_MS) {
+    activeGeminiModelIdx = 0;
+    console.log(`🔄 Volviendo al modelo principal de Gemini: ${models[0]}`);
   }
-  return models[activeModelIdx];
+  return models[activeGeminiModelIdx];
+}
+
+function currentOpenAIModel() {
+  const models = getOpenAIModelList();
+  if (activeOpenAIModelIdx > 0 && Date.now() - lastOpenAISwitchAt > MODEL_RESET_MS) {
+    activeOpenAIModelIdx = 0;
+    console.log(`🔄 Volviendo al modelo principal de OpenAI: ${models[0]}`);
+  }
+  return models[activeOpenAIModelIdx];
 }
 
 function getErrorMessage(error) {
@@ -76,6 +107,9 @@ function isModelRetiredOrUnsupported(error) {
     msg.includes('unsupported') ||
     msg.includes('model not found') ||
     msg.includes('unknown model') ||
+    msg.includes('does not exist') ||
+    msg.includes('do not have access') ||
+    msg.includes('dont have access') ||
     msg.includes('deprecated') ||
     msg.includes('has been discontinued')
   );
@@ -129,16 +163,35 @@ function isRetryableProviderError(error) {
   );
 }
 
-function tryNextModel(reason = 'Modelo saturado') {
-  const models = getModelList();
-  if (activeModelIdx + 1 < models.length) {
-    activeModelIdx++;
-    lastSwitchAt = Date.now();
-    console.warn(`⚠️  ${reason}. Cambiando a: ${models[activeModelIdx]}`);
+function tryNextGeminiModel(reason = 'Modelo Gemini saturado') {
+  const models = getGeminiModelList();
+  if (activeGeminiModelIdx + 1 < models.length) {
+    activeGeminiModelIdx++;
+    lastGeminiSwitchAt = Date.now();
+    console.warn(`⚠️  ${reason}. Cambiando Gemini a: ${models[activeGeminiModelIdx]}`);
     return true;
   }
   console.error('❌ Todos los modelos Gemini están saturados.');
   return false;
+}
+
+function tryNextOpenAIModel(reason = 'Modelo OpenAI saturado') {
+  const models = getOpenAIModelList();
+  if (activeOpenAIModelIdx + 1 < models.length) {
+    activeOpenAIModelIdx++;
+    lastOpenAISwitchAt = Date.now();
+    console.warn(`⚠️  ${reason}. Cambiando OpenAI a: ${models[activeOpenAIModelIdx]}`);
+    return true;
+  }
+  console.error('❌ Todos los modelos OpenAI están saturados o no disponibles.');
+  return false;
+}
+
+function resetModelFallbackState() {
+  activeGeminiModelIdx = 0;
+  lastGeminiSwitchAt = 0;
+  activeOpenAIModelIdx = 0;
+  lastOpenAISwitchAt = 0;
 }
 
 function parseModelJsonResponse(rawText) {
@@ -269,7 +322,7 @@ function buildUserMessage(contextoExtra, mensajeUsuario) {
 }
 
 async function callGemini({ validHistory, promptFinal, contextoExtra, mensajeUsuario }) {
-  const modelName = currentModel();
+  const modelName = currentGeminiModel();
   console.log(`🤖 Usando modelo Gemini: ${modelName}`);
 
   const model = client.getGenerativeModel({
@@ -312,8 +365,9 @@ async function callOpenAI({ validHistory, promptFinal, contextoExtra, mensajeUsu
     throw new Error('OPENAI_API_KEY no configurada');
   }
 
-  const model = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+  const model = currentOpenAIModel();
   const timeoutMs = Number(process.env.OPENAI_TIMEOUT_MS || 15000);
+  console.log(`🤖 Usando modelo OpenAI: ${model}`);
 
   const langHint = detectLanguageHint(mensajeUsuario);
   const languageRule = langHint
@@ -416,12 +470,12 @@ async function tryGeminiWithFallbacks({ validHistory, promptFinal, contextoExtra
     Number(process.env.GEMINI_JSON_RETRIES_PER_MODEL || 1)
   );
 
-  const models = getModelList();
+  const models = getGeminiModelList();
   const jsonRetriesByModel = new Map();
   const maxAttempts = Math.max(3, models.length * (JSON_RETRIES_PER_MODEL + 2));
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const modelName = currentModel();
+    const modelName = currentGeminiModel();
 
     try {
       const result = await callGemini({ validHistory, promptFinal, contextoExtra, mensajeUsuario });
@@ -437,21 +491,21 @@ async function tryGeminiWithFallbacks({ validHistory, promptFinal, contextoExtra
           continue;
         }
         console.warn(`⚠️ JSON inválido persistente en ${modelName}. Probando siguiente modelo.`);
-        if (!tryNextModel('JSON inválido persistente')) break;
+        if (!tryNextGeminiModel('JSON inválido persistente')) break;
         continue;
       }
 
       if (isTransientProviderError(error)) {
         console.warn(`[IA_ERROR][TRANSIENT][${modelName}] ${error.message}`);
         console.warn(`⚠️ Error transitorio en ${modelName}: ${error.message}`);
-        if (!tryNextModel('Error transitorio del proveedor')) break;
+        if (!tryNextGeminiModel('Error transitorio del proveedor')) break;
         continue;
       }
 
       if (isModelRetiredOrUnsupported(error)) {
         console.warn(`[IA_ERROR][UNSUPPORTED_MODEL][${modelName}] ${error.message}`);
         console.warn(`⚠️ Modelo retirado o no soportado (${modelName}): ${error.message}`);
-        if (!tryNextModel('Modelo retirado/no soportado')) break;
+        if (!tryNextGeminiModel('Modelo retirado/no soportado')) break;
         continue;
       }
 
@@ -462,11 +516,70 @@ async function tryGeminiWithFallbacks({ validHistory, promptFinal, contextoExtra
       }
 
       console.error(`❌ Error no clasificado en ${modelName}: ${error.message}`);
-      if (!tryNextModel('Error desconocido en el modelo actual')) break;
+      if (!tryNextGeminiModel('Error desconocido en el modelo actual')) break;
     }
   }
 
   return null; // todos los modelos Gemini fallaron
+}
+
+async function tryOpenAIWithFallbacks({ validHistory, promptFinal, contextoExtra, mensajeUsuario }) {
+  const JSON_RETRIES_PER_MODEL = Math.max(
+    0,
+    Number(process.env.OPENAI_JSON_RETRIES_PER_MODEL || 1)
+  );
+
+  const models = getOpenAIModelList();
+  const jsonRetriesByModel = new Map();
+  const maxAttempts = Math.max(3, models.length * (JSON_RETRIES_PER_MODEL + 2));
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const modelName = currentOpenAIModel();
+
+    try {
+      const result = await callOpenAI({ validHistory, promptFinal, contextoExtra, mensajeUsuario });
+      console.log(`✅ Respuesta OK desde ${result.provider}:${result.model}`);
+      return result.data;
+    } catch (error) {
+      if (isJsonParseError(error)) {
+        console.warn(`[IA_ERROR][BAD_JSON][${modelName}] ${error.message}`);
+        const usedRetries = jsonRetriesByModel.get(modelName) || 0;
+        if (usedRetries < JSON_RETRIES_PER_MODEL) {
+          jsonRetriesByModel.set(modelName, usedRetries + 1);
+          console.warn(`⚠️ JSON inválido en ${modelName} (${error.message}). Reintento ${usedRetries + 1}/${JSON_RETRIES_PER_MODEL}.`);
+          continue;
+        }
+        console.warn(`⚠️ JSON inválido persistente en ${modelName}. Probando siguiente modelo OpenAI.`);
+        if (!tryNextOpenAIModel('JSON inválido persistente')) break;
+        continue;
+      }
+
+      if (isTransientProviderError(error)) {
+        console.warn(`[IA_ERROR][TRANSIENT][${modelName}] ${error.message}`);
+        console.warn(`⚠️ Error transitorio en ${modelName}: ${error.message}`);
+        if (!tryNextOpenAIModel('Error transitorio del proveedor')) break;
+        continue;
+      }
+
+      if (isModelRetiredOrUnsupported(error)) {
+        console.warn(`[IA_ERROR][UNSUPPORTED_MODEL][${modelName}] ${error.message}`);
+        console.warn(`⚠️ Modelo retirado o no soportado (${modelName}): ${error.message}`);
+        if (!tryNextOpenAIModel('Modelo retirado/no soportado')) break;
+        continue;
+      }
+
+      if (isPromptLogicError(error)) {
+        console.error(`[IA_ERROR][PROMPT_LOGIC][${modelName}] ${error.message}`);
+        console.error(`❌ Error lógico de prompt/schema en ${modelName}: ${error.message}`);
+        break;
+      }
+
+      console.error(`❌ Error no clasificado en ${modelName}: ${error.message}`);
+      if (!tryNextOpenAIModel('Error desconocido en el modelo actual')) break;
+    }
+  }
+
+  return null; // todos los modelos OpenAI fallaron
 }
 
 async function procesarConIA(historial, mensajeUsuario, contextoExtra, valoresExcel) {
@@ -486,31 +599,24 @@ async function procesarConIA(historial, mensajeUsuario, contextoExtra, valoresEx
   }
 
   if (platform === 'openai') {
-    console.log('🔧 [AI_PLATFORM] Usando solo OpenAI');
-    try {
-      const result = await callOpenAI(callArgs);
-      console.log(`✅ Respuesta OK desde ${result.provider}:${result.model}`);
-      return result.data;
-    } catch (error) {
-      console.error(`❌ OpenAI falló: ${error.message}. Escalando.`);
-      return buildSafeEscalationResponse();
-    }
+    console.log('🔧 [AI_PLATFORM] Usando solo OpenAI con fallback de modelos');
+    const data = await tryOpenAIWithFallbacks(callArgs);
+    if (data) return data;
+    console.error('❌ Todos los modelos OpenAI fallaron. Escalando.');
+    return buildSafeEscalationResponse();
   }
 
   // both (default)
-  console.log('🔧 [AI_PLATFORM] Usando Gemini con fallback a OpenAI');
+  console.log('🔧 [AI_PLATFORM] Orden de fallback: GEMINI_MODEL → GEMINI_MODEL_FALLBACKS → OPENAI_MODEL → OPENAI_MODEL_FALLBACKS');
   const geminiData = await tryGeminiWithFallbacks(callArgs);
   if (geminiData) return geminiData;
 
-  console.warn('⚠️ Todos los Gemini fallaron. Intentando fallback OpenAI...');
-  try {
-    const result = await callOpenAI(callArgs);
-    console.log(`✅ Fallback OK desde ${result.provider}:${result.model}`);
-    return result.data;
-  } catch (error) {
-    console.error(`🚨 También falló OpenAI: ${error.message}`);
-    return buildSafeEscalationResponse();
-  }
+  console.warn('⚠️ Todos los Gemini fallaron. Intentando cadena de fallback OpenAI...');
+  const openAIData = await tryOpenAIWithFallbacks(callArgs);
+  if (openAIData) return openAIData;
+
+  console.error('🚨 También fallaron todos los modelos OpenAI.');
+  return buildSafeEscalationResponse();
 }
 
 /**
@@ -581,9 +687,13 @@ module.exports = {
   procesarConIA,
   translateMessagesToSpanish,
   _test: {
+    getGeminiModelList,
+    getOpenAIModelList,
     isJsonParseError,
+    tryOpenAIWithFallbacks,
     parseModelJsonResponse,
     isRetryableProviderError,
     buildSafeEscalationResponse,
+    resetModelFallbackState,
   },
 };
