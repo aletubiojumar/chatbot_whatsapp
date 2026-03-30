@@ -8,6 +8,22 @@ const { generateConversationPdf } = require('../utils/pdfGenerator');
 const { buildInitialTemplateText } = require('./templateSender');
 const fileLogger          = require('../utils/fileLogger');
 const axios = require('axios');
+const {
+  findNextAvailableSlot,
+  bookAppointment,
+  getBooking,
+  saveProposedSlot,
+  formatSlotForUser,
+  detectPreferenceFromText,
+} = require('../calendar/appointmentScheduler');
+
+// Activo solo si están configuradas las credenciales de Microsoft Graph
+const CALENDAR_ENABLED = !!(process.env.OUTLOOK_CALENDAR_USER && process.env.MICROSOFT_TENANT_ID);
+
+// Mapping nombre perito → email para añadirlo como attendee en el evento de Outlook
+const PERITO_EMAIL_MAP = (() => {
+  try { return JSON.parse(process.env.OUTLOOK_PERITO_EMAILS || '{}'); } catch { return {}; }
+})();
 
 // Mapeo entre los valores que devuelve la IA y los stages internos
 const ESTADO_IA_TO_STAGE = {
@@ -45,6 +61,10 @@ function isPeritoAttendeeMentionInUser(text) {
     t.includes('atendera al perito') ||
     (t.includes('perito') && t.includes('atender'))
   );
+}
+
+function isLocationRequest(text) {
+  return norm(text).includes('rogamos nos pueda mandar la ubicacion del riesgo');
 }
 
 function isAffirmativeAck(text) {
@@ -282,7 +302,12 @@ async function processMessage(waId, messageObj) {
       }
       // Guardar coordenadas aunque la conversación esté cerrada y sincronizar PeritoLine
       if (locationCoords) {
-        conversationManager.createOrUpdateConversation(waId, { coordenadas: locationCoords });
+        const lateUpdate = { coordenadas: locationCoords };
+        if (conversation.status === 'awaiting_location') {
+          lateUpdate.status = 'pending'; // desactivar standby al recibir la ubicación
+          lateUpdate.locationStandbyUntil = 0;
+        }
+        conversationManager.createOrUpdateConversation(waId, lateUpdate);
         triggerEncargoSync(nexp, 'coordenadas_tardias', '', false, true);
         L.log(`📍 Coordenadas recibidas en stage terminal, guardadas y sync disparado: ${locationCoords}`);
       }
@@ -367,6 +392,27 @@ async function processMessage(waId, messageObj) {
     // tipoVivienda === 'unifamiliar': la IA gestiona sin hint adicional
 
     contextoSistema += '\n[Videoperitación]: Si el usuario no expresa dudas, no expliques funcionamiento; pregunta disponibilidad directa (mañana/tarde).';
+
+    // Estado de espera de ubicación
+    if (conversation.status === 'awaiting_location') {
+      if (locationCoords) {
+        contextoSistema += '\n[UBICACIÓN RECIBIDA]: El asegurado acaba de enviar su ubicación GPS. Acéptala y procede directamente con el resumen final de datos para concluir la conversación.';
+      } else {
+        contextoSistema += '\n[UBICACIÓN PENDIENTE]: La conversación está pendiente de recibir la ubicación del riesgo. El asegurado indicó que la enviaría más tarde. Si ahora escribe sin enviar GPS, responde brevemente y recuérdale que puede compartir la ubicación cuando quiera.';
+      }
+    }
+
+    // Reintento de petición de ubicación si el asegurado la ignoró
+    if (!locationCoords && conversation.status !== 'awaiting_location' && isLocationRequest(lastBotMessage)) {
+      const vecesYaPedida = mensajesPrevios.filter(
+        m => m.direction === 'out' && isLocationRequest(m.text || '')
+      ).length;
+      if (vecesYaPedida < 2) {
+        contextoSistema += '\n[UBICACIÓN IGNORADA – REINTENTAR]: El asegurado ha respondido sin enviar la ubicación GPS. Vuelve a pedirla con el mismo mensaje exacto antes de continuar con el resumen.';
+      } else {
+        contextoSistema += '\n[UBICACIÓN IGNORADA – SEGUNDA VEZ]: El asegurado ha ignorado la petición de ubicación en dos ocasiones. Continúa con el resumen sin pedirla más e incluye «ubicacion_pendiente»: true en datos_extraidos.';
+      }
+    }
     contextoSistema += '\n[DISTINCIÓN DE CAMPOS]: "Relación" es SOLO la relación del interlocutor actual con el asegurado. "AT. Perito" es SOLO la persona que atenderá al perito en la visita.';
     if (peritoAttendeeContext) {
       contextoSistema += '\n[CONTEXTO ACTUAL]: El usuario está respondiendo sobre quién atenderá al perito. Extrae nombre_contacto/relacion_contacto/telefono_contacto para "AT. Perito". No cambies la columna "Relación" del interlocutor.';
@@ -386,6 +432,78 @@ async function processMessage(waId, messageObj) {
     }
     if (identityConfirmedNow) {
       contextoSistema += '\n[CONFIRMACIÓN IDENTIDAD]: El usuario responde afirmativamente a tu pregunta de identidad/relación. Da la identificación por confirmada y avanza al siguiente dato pendiente. PROHIBIDO repetir la misma pregunta de identidad.';
+    }
+
+    // ── Calendario Outlook: consultar slot ANTES de llamar a la IA ───────
+    if (CALENDAR_ENABLED) {
+      const digitalSi       = conversation.digital === 'Sí';
+      const prefFromText    = detectPreferenceFromText(text);
+      const prefFromPrev    = String(conversation.horario || '').trim();
+      const currentPref     = prefFromText || prefFromPrev;
+      const existingBooking = getBooking(nexp);
+      const slotConfirmed   = existingBooking?.status === 'confirmed';
+
+      if (digitalSi && currentPref && !slotConfirmed) {
+        const proposedBooking = existingBooking?.status === 'proposed' && existingBooking?.slotStart;
+
+        if (proposedBooking && isAffirmativeAck(text)) {
+          // Usuario confirma el slot propuesto → crear la cita ahora
+          try {
+            const proposedSlot = { start: new Date(existingBooking.slotStart) };
+            const [attNombreRaw = '', , attTelefonoRaw = ''] = String(conversation.attPerito || '').split(' - ');
+            const attNombreFinal   = attNombreRaw   !== 'sin indicar' ? attNombreRaw   : '';
+            const attTelefonoFinal = attTelefonoRaw !== 'sin indicar' ? attTelefonoRaw : conversation.waId || '';
+            const virtualPeritoKey = (process.env.PERITOLINE_VIRTUAL_PERITO_NAME || '').toUpperCase();
+            const peritoEmail      = PERITO_EMAIL_MAP[virtualPeritoKey] || '';
+
+            // URL de la plataforma web de videoperitación de la aseguradora
+            const aseguradoraUrl = (() => {
+              try {
+                const urlMap = JSON.parse(process.env.OUTLOOK_ASEGURADORA_URLS || '{}');
+                const aseg   = String(valoresExcel.aseguradora || '').trim().toUpperCase();
+                return urlMap[aseg] || process.env.OUTLOOK_ASEGURADORA_URL_DEFAULT || '';
+              } catch { return process.env.OUTLOOK_ASEGURADORA_URL_DEFAULT || ''; }
+            })();
+
+            const result = await bookAppointment({
+              nexp,
+              slot:       proposedSlot,
+              attName:    attNombreFinal,
+              attPhone:   attTelefonoFinal,
+              peritoEmail,
+              peritoName: virtualPeritoKey,
+              aseguradoraUrl,
+            });
+
+            if (result.success) {
+              const slotText = formatSlotForUser(proposedSlot);
+              contextoSistema += `\n[CITA CONFIRMADA EN CALENDARIO]: La videoperitación ha sido registrada en el calendario de Outlook para el ${slotText}. Confirma al asegurado la fecha y hora exacta y marca estado_expediente="finalizado".`;
+              L.log(`📅 Cita Outlook creada: ${slotText}`);
+            }
+          } catch (err) {
+            contextoSistema += `\n[ERROR CALENDARIO]: No se pudo crear la cita (${err.message}). Informa al asegurado de que le confirmaremos la fecha por otro medio y finaliza la conversación.`;
+            L.err(`❌ Error creando cita Outlook: ${err.message}`);
+          }
+
+        } else if (!proposedBooking) {
+          // Aún no hay slot propuesto → buscar y proponer uno
+          try {
+            const slot = await findNextAvailableSlot(currentPref, nexp);
+            if (slot) {
+              saveProposedSlot(nexp, slot);
+              const slotText = formatSlotForUser(slot);
+              contextoSistema += `\n[SLOT DISPONIBLE EN OUTLOOK]: Hay disponibilidad el ${slotText}. Propón EXACTAMENTE esta fecha y hora al asegurado para que confirme. No marques "finalizado" hasta que el asegurado confirme.`;
+              L.log(`📅 Slot propuesto: ${slotText}`);
+            } else {
+              contextoSistema += `\n[SIN DISPONIBILIDAD]: No hay huecos disponibles en los próximos ${process.env.CALENDAR_HORIZON_DAYS || 5} días laborables para la preferencia "${currentPref}". Informa al asegurado y ofrece contactar por teléfono para gestionar la cita manualmente.`;
+              L.warn(`⚠️  Sin disponibilidad en Outlook para "${currentPref}"`);
+            }
+          } catch (err) {
+            L.err(`❌ Error consultando Outlook: ${err.message}`);
+            // No bloqueamos el flujo: la IA continúa sin la info del slot
+          }
+        }
+      }
     }
 
     // ── Llamada a la IA ──────────────────────────────────────────────────
@@ -424,6 +542,7 @@ async function processMessage(waId, messageObj) {
         preferencia_horaria,
         estado_expediente,
         idioma_conversacion,
+        ubicacion_pendiente,
       } = respuestaIA.datos_extraidos || {};
 
       const excelUpdates = {
@@ -468,6 +587,20 @@ async function processMessage(waId, messageObj) {
       else if (preferencia_horaria === 'tarde') excelUpdates.horario = 'Tarde';
       if (locationCoords) excelUpdates.coordenadas = locationCoords;
 
+      // Gestión de standby de ubicación
+      if (locationCoords && conversation.status === 'awaiting_location') {
+        // GPS recibida mientras estaba en espera → desactivar standby
+        excelUpdates.status = 'pending';
+        excelUpdates.locationStandbyUntil = 0;
+        L.log(`📍 Ubicación recibida — standby de ubicación desactivado`);
+      } else if (ubicacion_pendiente === true && !locationCoords && conversation.status !== 'awaiting_location') {
+        // Asegurado indica que enviará la ubicación más tarde → activar standby
+        const standbyHoras = Number(process.env.LOCATION_STANDBY_HOURS || 48);
+        excelUpdates.status = 'awaiting_location';
+        excelUpdates.locationStandbyUntil = Date.now() + standbyHoras * 3600000;
+        L.log(`📍 Ubicación pendiente — standby activado por ${standbyHoras}h`);
+      }
+
       const nuevoStage = ESTADO_IA_TO_STAGE[estado_expediente];
       if (nuevoStage) {
         if (nuevoStage === 'finalizado' && !isDefinitiveClosingMessage(respuestaIA.mensaje_para_usuario)) {
@@ -477,6 +610,17 @@ async function processMessage(waId, messageObj) {
           excelUpdates.stage = nuevoStage;
           excelUpdates.contacto = 'Sí'; // Conversación terminada con el asegurado
           L.log(`🔄 Stage → ${nuevoStage}`);
+        }
+      }
+
+      // ── Calendario Outlook: guardar datos de cita confirmada en Excel ──
+      if (CALENDAR_ENABLED) {
+        const booking = getBooking(nexp);
+        if (booking?.status === 'confirmed' && booking.slotStart) {
+          const slotDate = new Date(booking.slotStart);
+          excelUpdates.citaFecha     = slotDate.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
+          excelUpdates.citaHora      = `${String(slotDate.getHours()).padStart(2, '0')}:${String(slotDate.getMinutes()).padStart(2, '0')}`;
+          excelUpdates.citaOutlookId = booking.outlookEventId || '';
         }
       }
 

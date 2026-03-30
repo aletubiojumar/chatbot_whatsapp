@@ -32,9 +32,10 @@ const { procesarConIA }   = require('../ai/aiModel');
 const { generateConversationPdf, cleanOldPdfs, cleanOldDebugLogs } = require('../utils/pdfGenerator');
 const fileLogger          = require('../utils/fileLogger');
 
-const CHECK_MINUTES      = Number(process.env.SCHEDULER_CHECK_MINUTES         || 15);
-const INACTIVITY_MINUTES = Number(process.env.INACTIVITY_INTERVAL_MINUTES     || process.env.INACTIVITY_INTERVAL_HOURS * 60  || 120);
-const INACTIVITY_MAX     = Number(process.env.INACTIVITY_MAX_ATTEMPTS         || 3);
+const CHECK_MINUTES           = Number(process.env.SCHEDULER_CHECK_MINUTES         || 15);
+const INACTIVITY_MINUTES      = Number(process.env.INACTIVITY_INTERVAL_MINUTES     || process.env.INACTIVITY_INTERVAL_HOURS * 60  || 120);
+const INACTIVITY_MAX          = Number(process.env.INACTIVITY_MAX_ATTEMPTS         || 3);
+const LOCATION_STANDBY_HOURS  = Number(process.env.LOCATION_STANDBY_HOURS          || 48);
 
 const INACTIVITY_MS = INACTIVITY_MINUTES * 60000;
 const BH_START      = Number(process.env.BUSINESS_HOURS_START || 9);
@@ -78,11 +79,23 @@ async function runChecks() {
   const enHorario     = isBusinessHours();
   const TERMINAL      = new Set(['cerrado', 'finalizado', 'escalated']);
   const conversaciones = conversationManager.getAllConversations()
-    .filter(c => c.status === 'pending');
+    .filter(c => c.status === 'pending' || c.status === 'awaiting_location');
 
   for (const conv of conversaciones) {
     const { waId, nexp } = conv;
     if (!waId || !nexp) continue;
+
+    // ── Escenario C: standby de ubicación pendiente ───────────────────────
+    if (conv.status === 'awaiting_location') {
+      if (conv.coordenadas) {
+        // La ubicación ya llegó por otro canal (coords guardadas), solo limpiar el flag
+        conversationManager.createOrUpdateConversation(waId, { status: 'pending', locationStandbyUntil: 0 });
+        console.log(`📍 Standby ubicación resuelto (coordenadas ya recibidas): nexp=${nexp}`);
+      } else if (!conv.locationStandbyUntil || conv.locationStandbyUntil <= now) {
+        await handleLocationStandbyExpired(conv);
+      }
+      continue; // nunca aplicar lógica A/B a estas conversaciones
+    }
 
     // Saltar conversaciones en stage terminal (cerrado, finalizado, escalated)
     if (TERMINAL.has(conv.stage)) continue;
@@ -185,6 +198,55 @@ async function handleInactivity(conv, now) {
   }
 }
 
+async function handleLocationStandbyExpired(conv) {
+  const { waId, nexp } = conv;
+  try {
+    const mensajes    = conversationManager.getMensajes(waId);
+    const userData    = conv?.userData || {};
+    const isClosed    = ['cerrado', 'finalizado', 'escalated'].includes(conv.stage);
+
+    // Solo enviar mensaje si la conversación aún no está cerrada
+    if (!isClosed) {
+      const msgCierre = 'Le informamos de que el perito se pondrá en contacto con usted para concretar los detalles de la visita. Gracias.';
+      await adapter.sendText(waId, msgCierre);
+
+      const mensajesConCierre = [
+        ...mensajes,
+        { direction: 'out', text: msgCierre, timestamp: new Date().toISOString() },
+      ];
+      conversationManager.createOrUpdateConversation(waId, {
+        stage:               'cerrado',
+        status:              'pending',
+        contacto:            'Sí',
+        locationStandbyUntil: 0,
+        mensajes:            mensajesConCierre,
+      });
+
+      generateConversationPdf(nexp, userData, mensajesConCierre, {
+        stage:     'cerrado',
+        contacto:  'Sí',
+        attPerito: conv?.attPerito,
+        danos:     conv?.danos,
+        digital:   conv?.digital,
+        horario:   conv?.horario,
+      }).catch(e => {
+        console.error(`❌ Error generando PDF standby nexp=${nexp}:`, e.message);
+        fileLogger.writeLog(nexp, 'ERROR', `Error generando PDF standby: ${e.message}`);
+      });
+    } else {
+      // Conversación ya cerrada: solo limpiar el flag de standby
+      conversationManager.createOrUpdateConversation(waId, { status: 'pending', locationStandbyUntil: 0 });
+    }
+
+    triggerEncargoSync(nexp, 'ubicacion_pendiente_expirada', '[IA] Ubicación pendiente (Sin coordenadas)', false, true);
+    console.log(`📍 Standby ubicación expirado (${LOCATION_STANDBY_HOURS}h): nexp=${nexp}`);
+    fileLogger.writeLog(nexp, 'INFO', `Standby ubicación expirado waId=${waId} isClosed=${isClosed}`);
+  } catch (err) {
+    console.error(`❌ Error en standby ubicación ${waId}:`, err.message);
+    fileLogger.writeLog(nexp, 'ERROR', `Error standby ubicación waId=${waId}: ${err.message}`);
+  }
+}
+
 async function finalizar(waId, nexp, anotacion = '') {
   try {
     const conv = conversationManager.getConversation(waId);
@@ -264,6 +326,7 @@ function startScheduler() {
   console.log(`   ⏱️  Verificación cada: ${CHECK_MINUTES} min`);
   console.log(`   📩 Sin respuesta:   cierre silencioso (sin recontactar)`);
   console.log(`   💤 Inactividad:     aviso cada ${INACTIVITY_MINUTES}min × ${INACTIVITY_MAX} veces`);
+  console.log(`   📍 Standby ubic.:   expiración a las ${LOCATION_STANDBY_HOURS}h sin GPS`);
   console.log(`   🕐 Envíos: L-V ${process.env.BUSINESS_HOURS_START || 9}:00–${process.env.BUSINESS_HOURS_END || 20}:00\n`);
 
   runChecks().catch(e => console.error('❌ Error en verificación inicial:', e.message));

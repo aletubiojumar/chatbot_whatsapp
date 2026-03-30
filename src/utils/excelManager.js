@@ -54,6 +54,9 @@ const FIELD_TO_COL = {
   digital:            'Digital',
   horario:            'Horario',
   coordenadas:        'Coordenadas',
+  citaFecha:          'Cita Fecha',
+  citaHora:           'Cita Hora',
+  citaOutlookId:      'Cita Outlook ID',
 };
 
 const TECHNICAL_COL_PREFIX = '_';

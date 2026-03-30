@@ -10,6 +10,7 @@ require('dotenv').config({ override: true });
 const path = require('path');
 const fs   = require('fs');
 const XLSX = require('xlsx');
+const { getBooking } = require('../src/calendar/appointmentScheduler');
 
 const PDF_DIR = path.resolve(__dirname, '..', 'docs', 'conversations');
 
@@ -1015,6 +1016,124 @@ async function desasignarPerito(page, peritoName) {
   console.log(`🗑️  Perito "${peritoName}" desasignado`);
 }
 
+async function createAvisoNuevaCita(page, { fecha, hora, peritoName, nexp }) {
+  if (!fecha || !hora) {
+    console.log('⚠️  [Aviso] Sin datos de cita — se omite creación de aviso en PeritoLine');
+    return;
+  }
+
+  console.log(`📅 [Aviso] Creando aviso NUEVA CITA | nexp=${nexp} | fecha=${fecha} | hora=${hora}`);
+
+  const newAvisoLocators = [
+    page.locator('button, a').filter({ hasText: /nuevo aviso/i }),
+    page.locator('button, a').filter({ hasText: /a[ñn]adir aviso/i }),
+    page.locator('button, a').filter({ hasText: /crear aviso/i }),
+    page.locator('[onclick*="aviso" i], [href*="aviso" i]'),
+    page.locator('button:has(i.fa-bell), a:has(i.fa-bell)'),
+    page.locator('button:has(i.fa-calendar-plus), a:has(i.fa-calendar-plus)'),
+  ];
+
+  const btnClicked = await clickFirstExisting(newAvisoLocators);
+  if (!btnClicked) {
+    console.warn('⚠️  [Aviso] No se encontró botón "Nuevo aviso" — se omite');
+    return;
+  }
+
+  const avisoModal = page.locator(
+    '.modal-dialog:visible, div[role="dialog"]:visible, .ui-dialog:visible'
+  ).filter({ hasText: /aviso|cita|recordatorio/i }).first();
+
+  const modalVisible = await waitAnyVisible([avisoModal], 8_000);
+  if (!modalVisible) {
+    console.warn('⚠️  [Aviso] Modal de aviso no apareció — se omite');
+    return;
+  }
+
+  await page.waitForTimeout(400);
+
+  // Fecha recordatorio
+  const fechaRecordatorioField = avisoModal.locator(
+    'input[name*="fecha_recordatorio" i], input[id*="fecha_recordatorio" i], ' +
+    'input[name*="recordatorio" i], input[id*="recordatorio" i]'
+  ).first();
+  if (await fechaRecordatorioField.count()) {
+    await fechaRecordatorioField.fill(fecha);
+    await fechaRecordatorioField.evaluate(el => el.dispatchEvent(new Event('change', { bubbles: true })));
+  }
+
+  // Fecha evento
+  const fechaEventoField = avisoModal.locator(
+    'input[name*="fecha_evento" i], input[id*="fecha_evento" i], ' +
+    'input[name*="fecha_cita" i], input[id*="fecha_cita" i], ' +
+    'input[type="date"]:not([name*="recordatorio" i])'
+  ).first();
+  if (await fechaEventoField.count()) {
+    await fechaEventoField.fill(fecha);
+    await fechaEventoField.evaluate(el => el.dispatchEvent(new Event('change', { bubbles: true })));
+  }
+
+  // Hora
+  const horaField = avisoModal.locator(
+    'input[name*="hora" i], input[id*="hora" i], input[type="time"]'
+  ).first();
+  if (await horaField.count()) {
+    await horaField.fill(hora);
+    await horaField.evaluate(el => el.dispatchEvent(new Event('change', { bubbles: true })));
+  }
+
+  // Texto cita
+  const textoCitaField = avisoModal.locator(
+    'input[name*="texto" i], input[id*="texto" i], ' +
+    'textarea[name*="texto" i], textarea[id*="texto" i], ' +
+    'input[name*="cita" i], input[id*="cita" i]'
+  ).first();
+  if (await textoCitaField.count()) {
+    await textoCitaField.fill('VIDEOPERITACIÓN');
+    await textoCitaField.evaluate(el => el.dispatchEvent(new Event('input', { bubbles: true })));
+  }
+
+  // CITAR A (select o input de búsqueda)
+  const citarASelect = avisoModal.locator(
+    'select[name*="citar" i], select[name*="perito" i], select[name*="destinatario" i]'
+  ).first();
+  if (await citarASelect.count()) {
+    const options = await citarASelect.locator('option').all();
+    for (const opt of options) {
+      const txt = String(await opt.innerText()).trim().toUpperCase();
+      if (peritoName && (txt.includes(peritoName.toUpperCase()) || txt.includes('PERITOVIRTUAL'))) {
+        const val = await opt.getAttribute('value');
+        await citarASelect.selectOption(val);
+        break;
+      }
+    }
+  } else {
+    const citarAInput = avisoModal.locator(
+      'input[name*="citar" i], input[id*="citar" i], input[name*="perito" i]'
+    ).first();
+    if (await citarAInput.count()) {
+      await citarAInput.fill(peritoName || 'PERITO VIRTUAL');
+      await page.waitForTimeout(500);
+      const suggestion = page.locator(
+        '.autocomplete-suggestion:visible, .dropdown-item:visible, li.ui-menu-item:visible'
+      ).filter({ hasText: new RegExp(peritoName || 'perito', 'i') }).first();
+      if (await suggestion.count()) await suggestion.click({ force: true });
+    }
+  }
+
+  await page.waitForTimeout(300);
+
+  // Guardar
+  const guardarBtn = avisoModal.locator('button, a, input[type="submit"]')
+    .filter({ hasText: /guardar|aceptar|crear|confirmar/i }).first();
+  if (await guardarBtn.count()) {
+    await guardarBtn.click({ force: true });
+    await avisoModal.waitFor({ state: 'hidden', timeout: TIMEOUT_MS }).catch(() => {});
+    console.log(`✅ [Aviso] Aviso NUEVA CITA creado en PeritoLine: ${fecha} ${hora}`);
+  } else {
+    console.warn('⚠️  [Aviso] No se encontró botón Guardar en el modal de aviso');
+  }
+}
+
 async function processTask(page, task) {
   const shouldFail = task.contacto === 'no' || task.contacto === 'no_encontrado' || task.contacto === 'error';
   const doPerito = task.contacto === 'si' && VIRTUAL_PERITO_NAME;
@@ -1052,6 +1171,21 @@ async function processTask(page, task) {
       await addAnotacionEncargo(page, task.anotacion);
       // Subir PDF de transcripción
       await uploadPdfToEncargo(page, task.encargo);
+
+      // Crear aviso NUEVA CITA si hay videoperitación confirmada en Outlook
+      const booking = getBooking(task.encargo);
+      if (booking?.status === 'confirmed' && booking.slotStart) {
+        const slotDate = new Date(booking.slotStart);
+        const fechaStr = slotDate.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
+        const horaStr  = `${String(slotDate.getHours()).padStart(2, '0')}:${String(slotDate.getMinutes()).padStart(2, '0')}`;
+        await openByEncargo(page, task.encargo);
+        await createAvisoNuevaCita(page, {
+          fecha:      fechaStr,
+          hora:       horaStr,
+          peritoName: VIRTUAL_PERITO_NAME,
+          nexp:       task.encargo,
+        });
+      }
     } finally {
       // Desasignar perito virtual — dejar el encargo sin asignación
       if (VIRTUAL_PERITO_NAME) {

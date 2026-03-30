@@ -117,6 +117,7 @@ INITIAL_RETRY_INTERVAL_MINUTES=360 # Intervalo entre reenvíos del template inic
 INITIAL_RETRY_MAX_ATTEMPTS=3       # Intentos máximos antes de escalar
 INACTIVITY_INTERVAL_MINUTES=120    # Intervalo entre mensajes de inactividad (2h)
 INACTIVITY_MAX_ATTEMPTS=3          # Recordatorios máximos antes de escalar
+LOCATION_STANDBY_HOURS=96          # Horas de espera cuando el asegurado indica que enviará la ubicación más tarde
 SEND_DELAY_MS=1500                 # Delay entre envíos al lanzar el script inicial (ms)
 
 # ── Horario de envío (lunes-viernes) ─────────────────────────────────────
@@ -264,10 +265,14 @@ Gemini devuelve siempre un objeto JSON con este esquema:
     "importe_estimado": "1500 €",
     "acepta_videollamada": true,
     "preferencia_horaria": "mañana",
-    "estado_expediente": "valoracion | agendando | finalizado | escalado_humano"
+    "estado_expediente": "valoracion | agendando | finalizado | escalado_humano",
+    "ubicacion_pendiente": false,
+    "idioma_conversacion": "es"
   }
 }
 ```
+
+`ubicacion_pendiente: true` indica que el asegurado ha reconocido la petición de ubicación pero no puede enviarla en ese momento. Activa el **standby de ubicación** (ver Schedulers).
 
 ### Schedulers automáticos
 
@@ -277,7 +282,42 @@ El scheduler corre cada `SCHEDULER_CHECK_MINUTES` (15 min). Los mensajes de inac
 |---|---|---|---|
 | **A — Sin respuesta inicial** | `lastUserMessageAt` es null | Reenvío del template inicial | `INITIAL_RETRY_MAX_ATTEMPTS` (3) |
 | **B — Inactividad mid-conv** | `lastUserMessageAt` existe y `now > nextReminderAt` | Mensaje de inactividad generado por IA | `INACTIVITY_MAX_ATTEMPTS` (3) |
-| **Escalado** | Se supera el límite en cualquier escenario | Mensaje de cierre generado por IA (multiidioma), marca `contacto=No`, activa PeritoLine sync y genera PDF | — |
+| **C — Standby de ubicación** | `status=awaiting_location` y `locationStandbyUntil` vencido | Si conv. abierta: mensaje de cierre + PDF + PeritoLine sync con `[IA] Ubicación pendiente (Sin coordenadas)`. Si ya cerrada: solo sync | `LOCATION_STANDBY_HOURS` (96h) |
+| **Escalado** | Se supera el límite en A o B | Mensaje de cierre generado por IA (multiidioma), marca `contacto=No`, activa PeritoLine sync y genera PDF | — |
+
+---
+
+## Solicitud de ubicación GPS
+
+Justo antes de enviar el resumen final de datos, el bot solicita **siempre** la ubicación del riesgo asegurado. El mensaje varía según el tipo de intervención:
+
+| Tipo | Mensaje |
+|---|---|
+| **Presencial** | *"Rogamos nos pueda mandar la ubicación del riesgo para facilitársela al perito y pueda llegar con facilidad. Gracias."* |
+| **Videoperitación** | *"Rogamos nos pueda mandar la ubicación del riesgo para concretar la dirección con exactitud. Gracias."* |
+
+El mensaje se adapta al idioma activo de la conversación. Si el asegurado ya compartió la ubicación durante la confirmación de dirección, no se vuelve a pedir.
+
+### Cuando el asegurado no envía la ubicación
+
+Si el asegurado **ignora** la petición y responde con texto, el bot la repite una vez más automáticamente. Si la ignora por segunda vez, activa el standby.
+
+El standby también se activa cuando:
+
+- Dice que lo hará más tarde
+- Dice que no puede o no sabe cómo
+
+En todos estos casos:
+
+1. El bot responde con naturalidad y continúa con el resumen sin bloquear el flujo.
+2. La IA devuelve `ubicacion_pendiente: true` en `datos_extraidos`.
+3. El bot activa el **standby de ubicación**: `status=awaiting_location` + `locationStandbyUntil=now+LOCATION_STANDBY_HOURS`.
+
+Durante el período de standby:
+- El asegurado puede enviar la ubicación GPS en cualquier momento → se guardan las coordenadas, se sincroniza PeritoLine (`coordenadas_tardias`) y se desactiva el standby automáticamente.
+- Los schedulers de inactividad (Escenarios A/B) **no se aplican** a estas conversaciones.
+
+Al expirar `LOCATION_STANDBY_HOURS` (default: 96h) sin recibir la ubicación, el **Escenario C** del scheduler cierra la conversación (si aún estaba abierta) y dispara un sync a PeritoLine con la anotación `[IA] Ubicación pendiente (Sin coordenadas)` para que el equipo pueda hacer seguimiento.
 
 ---
 
@@ -311,6 +351,7 @@ Gestionada por el equipo de Jumar. El bot lee estos campos y escribe el resultad
 | `Daños` | **Escritura** | Estimación económica de los daños |
 | `Digital` | **Escritura** | Acepta videoperitación (`Sí` / `No`) |
 | `Horario` | **Escritura** | Preferencia horaria (`Mañana` / `Tarde`) |
+| `Coordenadas` | **Escritura** | Coordenadas GPS del riesgo (`lat, lon`) si el asegurado las comparte |
 
 ### `data/bot_state.xlsx` — Estado técnico (hoja `__bot_state`)
 
@@ -319,7 +360,7 @@ Gestionada exclusivamente por el bot. Persiste el estado entre reinicios. **No s
 | Campo | Descripción |
 |---|---|
 | `waId` | Número de WhatsApp (sin +) |
-| `status` | `pending` / `escalated` |
+| `status` | `pending` / `escalated` / `awaiting_location` |
 | `stage` | Stage actual de la conversación |
 | `attempts` | Reenvíos del template inicial |
 | `inactivityAttempts` | Recordatorios de inactividad enviados |
@@ -328,6 +369,7 @@ Gestionada exclusivamente por el bot. Persiste el estado entre reinicios. **No s
 | `lastReminderAt` | Último recordatorio enviado |
 | `lastMessageAt` | Última actividad (entrada o salida) |
 | `mensajes` | JSON array con el historial completo de la conversación |
+| `locationStandbyUntil` | Timestamp Unix hasta el que esperar la ubicación GPS (solo cuando `status=awaiting_location`) |
 
 ---
 
@@ -377,6 +419,7 @@ El script escribe en el campo **Anotación Encargo 01** (máx. 128 caracteres) d
 | `No` (dejó de responder a mitad) | `[IA] Asegurado deja de responder` |
 | `No encontrado` | `[IA] Teléfono no encontrado` |
 | `Error` | `[IA] Contacto erróneo` |
+| Standby de ubicación expirado | `[IA] Ubicación pendiente (Sin coordenadas)` |
 
 ### Variables relevantes
 

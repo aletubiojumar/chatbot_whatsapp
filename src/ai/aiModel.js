@@ -194,6 +194,11 @@ const schema = {
           description:
             "Código ISO 639-1 del idioma detectado en los mensajes del usuario (ej: 'es', 'en', 'fr', 'ca', 'eu'). Rellénalo siempre.",
         },
+        ubicacion_pendiente: {
+          type: SchemaType.BOOLEAN,
+          description:
+            'true si el asegurado indica que no puede enviar la ubicación GPS ahora mismo y lo hará más tarde.',
+        },
       },
     },
   },

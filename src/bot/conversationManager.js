@@ -31,6 +31,7 @@ const TECH_FIELDS = new Set([
   'lastReminderAt',
   'lastMessageAt',
   'mensajes',
+  'locationStandbyUntil',
 ]);
 const EXCEL_FIELDS = new Set([
   'contacto',
@@ -74,6 +75,7 @@ function mergeConversation(baseExcel, state) {
     lastReminderAt: safeState.lastReminderAt ?? null,
     lastMessageAt: safeState.lastMessageAt ?? null,
     mensajes: Array.isArray(safeState.mensajes) ? safeState.mensajes : [],
+    locationStandbyUntil: safeState.locationStandbyUntil ?? null,
   };
 }
 
