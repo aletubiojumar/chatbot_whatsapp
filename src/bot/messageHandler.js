@@ -183,14 +183,57 @@ function isAllowedTerminalTurn({ currentStage, nextStage, userText, lastBotRespo
   return false;
 }
 
+function hasMeaningfulAttendee(conversation, { lastBotMessage = '', userText = '' } = {}) {
+  const stored = String(conversation?.attPerito || '').trim();
+  if (stored && !stored.startsWith('sin indicar')) return true;
+
+  return isPeritoAttendeePrompt(lastBotMessage) && isAffirmativeAck(userText);
+}
+
+function detectNextRequiredTask({
+  conversation,
+  lastBotMessage,
+  userText,
+  estimateAlreadyKnown,
+  extractedDigital,
+  preferredSchedule,
+  locationAlreadyShared,
+  locationRequestCount,
+}) {
+  const attendeeKnown = hasMeaningfulAttendee(conversation, { lastBotMessage, userText });
+  if (!attendeeKnown) return 'confirmar_at_perito';
+  if (!estimateAlreadyKnown) return 'pedir_estimacion';
+
+  const existingDigital = String(conversation?.digital || '').trim();
+  const digitalKnown =
+    typeof extractedDigital === 'boolean' ||
+    existingDigital === 'Sí' ||
+    existingDigital === 'No';
+  if (!digitalKnown) return 'evaluar_digital';
+
+  const effectiveDigital = shouldAssumeDigitalAcceptance({
+    extractedDigital,
+    existingDigital,
+    preferredSchedule,
+  });
+  if (effectiveDigital && !normalizeSchedulePreference(preferredSchedule || conversation?.horario)) {
+    return 'pedir_preferencia_horaria';
+  }
+
+  if (!locationAlreadyShared && locationRequestCount < 2) return 'pedir_ubicacion';
+
+  return 'resumen_final';
+}
+
 function buildBlockedTerminalRetryContext(currentStage) {
   const aiState = getNonTerminalAiStateForStage(currentStage);
   return `[SISTEMA: CONTINUAR_FLUJO_SIN_CERRAR stage=${aiState}]`;
 }
 
-function buildBlockedClosureRetryContext(currentStage) {
+function buildBlockedClosureRetryContext(currentStage, task) {
   const aiState = getNonTerminalAiStateForStage(currentStage);
-  return `[SISTEMA: PROHIBIDO_CIERRE_SIN_RESUMEN stage=${aiState}]`;
+  const taskMarker = task ? ` task=${task}` : '';
+  return `[SISTEMA: PROHIBIDO_CIERRE_SIN_RESUMEN stage=${aiState}${taskMarker}]`;
 }
 
 function hasSharedLocation(conversation, currentLocationCoords) {
@@ -656,60 +699,80 @@ async function processMessage(waId, messageObj) {
     let responseType = String(respuestaIA.datos_extraidos?.tipo_respuesta || 'normal').trim() || 'normal';
     let hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
     let nextStage = ESTADO_IA_TO_STAGE[respuestaIA.datos_extraidos?.estado_expediente];
+    let preferredSchedule = normalizeSchedulePreference(
+      respuestaIA.datos_extraidos?.preferencia_horaria || conversation.horario || ''
+    );
+    let nextRequiredTask = detectNextRequiredTask({
+      conversation,
+      lastBotMessage,
+      userText: text,
+      estimateAlreadyKnown,
+      extractedDigital: respuestaIA.datos_extraidos?.acepta_videollamada,
+      preferredSchedule,
+      locationAlreadyShared,
+      locationRequestCount,
+    });
 
-    const shouldRetryBlockedTerminal =
-      Boolean(nextStage) &&
-      (shouldBlockEarlyTerminalStage({
-        currentStage,
-        nextStage,
-        userText: text,
-        hasOutgoingMessage,
-      }) ||
-      ((nextStage === 'finalizado' || nextStage === 'escalated') &&
-        !canApplyStageTransition(currentStage, nextStage)));
+    for (let guardAttempt = 0; guardAttempt < 3; guardAttempt++) {
+      const shouldRetryBlockedTerminal =
+        Boolean(nextStage) &&
+        (shouldBlockEarlyTerminalStage({
+          currentStage,
+          nextStage,
+          userText: text,
+          hasOutgoingMessage,
+        }) ||
+        ((nextStage === 'finalizado' || nextStage === 'escalated') &&
+          !canApplyStageTransition(currentStage, nextStage)));
 
-    if (shouldRetryBlockedTerminal) {
-      const retriedStageResponse = await requestAIResponse({
+      const shouldRetryClosureLikeMessage =
+        hasOutgoingMessage &&
+        looksLikeClosureMessage(respuestaIA.mensaje_para_usuario) &&
+        !isAllowedTerminalTurn({
+          currentStage,
+          nextStage,
+          userText: text,
+          lastBotResponseType,
+          responseType,
+        });
+
+      if (!shouldRetryBlockedTerminal && !shouldRetryClosureLikeMessage) break;
+
+      const extraContext = shouldRetryBlockedTerminal
+        ? `${buildBlockedTerminalRetryContext(currentStage)}\n[SISTEMA: TAREA_OBLIGATORIA task=${nextRequiredTask}]`
+        : buildBlockedClosureRetryContext(currentStage, nextRequiredTask);
+
+      const guardedResponse = await requestAIResponse({
         historial,
         mensajeUsuario: text,
         contextoSistema,
         valoresExcel,
-        extraContext: buildBlockedTerminalRetryContext(currentStage),
+        extraContext,
       });
-      if (retriedStageResponse.mensaje_para_usuario) {
-        respuestaIA = retriedStageResponse;
-        responseType = String(respuestaIA.datos_extraidos?.tipo_respuesta || 'normal').trim() || 'normal';
-        hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
-        nextStage = ESTADO_IA_TO_STAGE[respuestaIA.datos_extraidos?.estado_expediente];
-        L.warn(`⚠️  IA intentó cerrar/escalar prematuramente desde stage=${currentStage}; se fuerza continuación del flujo`);
-      }
-    }
+      if (!guardedResponse.mensaje_para_usuario) break;
 
-    const shouldRetryClosureLikeMessage =
-      hasOutgoingMessage &&
-      looksLikeClosureMessage(respuestaIA.mensaje_para_usuario) &&
-      !isAllowedTerminalTurn({
-        currentStage,
-        nextStage,
+      respuestaIA = guardedResponse;
+      responseType = String(respuestaIA.datos_extraidos?.tipo_respuesta || 'normal').trim() || 'normal';
+      hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
+      nextStage = ESTADO_IA_TO_STAGE[respuestaIA.datos_extraidos?.estado_expediente];
+      preferredSchedule = normalizeSchedulePreference(
+        respuestaIA.datos_extraidos?.preferencia_horaria || conversation.horario || ''
+      );
+      nextRequiredTask = detectNextRequiredTask({
+        conversation,
+        lastBotMessage,
         userText: text,
-        lastBotResponseType,
-        responseType,
+        estimateAlreadyKnown,
+        extractedDigital: respuestaIA.datos_extraidos?.acepta_videollamada,
+        preferredSchedule,
+        locationAlreadyShared,
+        locationRequestCount,
       });
 
-    if (shouldRetryClosureLikeMessage) {
-      const retriedClosureResponse = await requestAIResponse({
-        historial,
-        mensajeUsuario: text,
-        contextoSistema,
-        valoresExcel,
-        extraContext: buildBlockedClosureRetryContext(currentStage),
-      });
-      if (retriedClosureResponse.mensaje_para_usuario) {
-        respuestaIA = retriedClosureResponse;
-        responseType = String(respuestaIA.datos_extraidos?.tipo_respuesta || 'normal').trim() || 'normal';
-        hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
-        nextStage = ESTADO_IA_TO_STAGE[respuestaIA.datos_extraidos?.estado_expediente];
-        L.warn(`⚠️  IA intentó cerrar con texto equivalente a cierre desde stage=${currentStage}; se fuerza continuación del flujo`);
+      if (shouldRetryBlockedTerminal) {
+        L.warn(`⚠️  IA intentó cerrar/escalar prematuramente desde stage=${currentStage}; intento ${guardAttempt + 1}/3 forzando tarea=${nextRequiredTask}`);
+      } else {
+        L.warn(`⚠️  IA intentó cerrar con texto equivalente a cierre desde stage=${currentStage}; intento ${guardAttempt + 1}/3 forzando tarea=${nextRequiredTask}`);
       }
     }
 
@@ -1013,6 +1076,8 @@ module.exports = {
     normalizeSchedulePreference,
     shouldAssumeDigitalAcceptance,
     shouldBlockEarlyTerminalStage,
+    hasMeaningfulAttendee,
+    detectNextRequiredTask,
     looksLikeClosureMessage,
     isAllowedTerminalTurn,
   },

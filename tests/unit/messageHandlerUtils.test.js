@@ -20,6 +20,8 @@ const {
   normalizeSchedulePreference,
   shouldAssumeDigitalAcceptance,
   shouldBlockEarlyTerminalStage,
+  hasMeaningfulAttendee,
+  detectNextRequiredTask,
   looksLikeClosureMessage,
   isAllowedTerminalTurn,
 } = _test;
@@ -311,6 +313,66 @@ describe('isAllowedTerminalTurn', () => {
       lastBotResponseType: 'normal',
       responseType: 'cierre_definitivo',
     }), true);
+  });
+});
+
+describe('hasMeaningfulAttendee', () => {
+  test('true si ya hay AT. Perito guardado', () => {
+    assert.equal(
+      hasMeaningfulAttendee({ attPerito: 'Matilde - asegurada - 34600000000' }, {}),
+      true
+    );
+  });
+
+  test('true si el último mensaje preguntaba por AT. Perito y el usuario responde sí', () => {
+    assert.equal(
+      hasMeaningfulAttendee({}, {
+        lastBotMessage: '¿Será usted misma quien atienda al perito en la vivienda?',
+        userText: 'sí',
+      }),
+      true
+    );
+  });
+});
+
+describe('detectNextRequiredTask', () => {
+  test('si falta AT. Perito, lo fuerza antes del cierre', () => {
+    assert.equal(detectNextRequiredTask({
+      conversation: {},
+      lastBotMessage: 'Según nos consta, el siniestro es por daños por agua. ¿Es correcto?',
+      userText: 'sí',
+      estimateAlreadyKnown: false,
+      extractedDigital: undefined,
+      preferredSchedule: '',
+      locationAlreadyShared: false,
+      locationRequestCount: 0,
+    }), 'confirmar_at_perito');
+  });
+
+  test('si AT. Perito ya está y falta estimación, fuerza estimación', () => {
+    assert.equal(detectNextRequiredTask({
+      conversation: { attPerito: 'Matilde - asegurada - 34600000000' },
+      lastBotMessage: 'Según nos consta, el siniestro es por daños por agua. ¿Es correcto?',
+      userText: 'sí',
+      estimateAlreadyKnown: false,
+      extractedDigital: undefined,
+      preferredSchedule: '',
+      locationAlreadyShared: false,
+      locationRequestCount: 0,
+    }), 'pedir_estimacion');
+  });
+
+  test('si falta ubicación tras completar lo demás, fuerza ubicación', () => {
+    assert.equal(detectNextRequiredTask({
+      conversation: { attPerito: 'Matilde - asegurada - 34600000000', danos: '200 €', digital: 'No' },
+      lastBotMessage: 'Gracias',
+      userText: 'ok',
+      estimateAlreadyKnown: true,
+      extractedDigital: false,
+      preferredSchedule: '',
+      locationAlreadyShared: false,
+      locationRequestCount: 0,
+    }), 'pedir_ubicacion');
   });
 });
 
