@@ -306,6 +306,7 @@ function buildPromptFinal(valoresExcel) {
    - Si aparece "[SISTEMA: REINTENTO_MENSAJE_VACIO]", rehace la respuesta pendiente de forma breve, natural y no vacía, manteniendo el flujo actual.
    - Si aparece "[SISTEMA: NO_REPETIR_IDENTIDAD]", el usuario ya confirmó la identidad. No repitas esa pregunta y pasa al siguiente dato pendiente.
    - Si aparece "[SISTEMA: CONTINUAR_FLUJO_SIN_CERRAR" (con o sin datos extra como "stage=..."), tu respuesta anterior intentó cerrar o derivar antes de tiempo. Está prohibido cerrar, resumir o escalar ahora. Continúa con la siguiente pregunta pendiente y devuelve un estado no terminal coherente.
+   - Si aparece "[SISTEMA: PROHIBIDO_CIERRE_SIN_RESUMEN" (con o sin datos extra como "stage=..."), NO puedes enviar mensajes equivalentes a cierre, como indicar que el equipo o el perito continuará la gestión, que contactará más tarde o que la conversación termina. Continúa estrictamente con la siguiente tarea pendiente del flujo. No cierres hasta haber emitido el RESUMEN FINAL OBLIGATORIO y recibir confirmación.
    - Si aparece "[SISTEMA: UBICACION_STANDBY_EXPIRADA]", la espera de ubicación ha vencido. Cierra de forma breve indicando que el perito continuará la gestión por otro medio y usa estado_expediente="escalado_humano".
 22. CAMPO "tipo_respuesta": rellénalo SIEMPRE.
    - "pregunta_identidad": cuando tu mensaje principal sea confirmar si hablas con el asegurado o pedir la relación del interlocutor.

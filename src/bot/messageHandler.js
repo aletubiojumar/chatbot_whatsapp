@@ -145,9 +145,52 @@ function shouldBlockEarlyTerminalStage({ currentStage, nextStage, userText, hasO
   return false;
 }
 
+function looksLikeClosureMessage(text) {
+  const t = norm(text);
+  if (!t) return false;
+
+  return (
+    t.includes('le contactaremos en breve') ||
+    t.includes('gracias por su paciencia') ||
+    t.includes('su caso esta siendo atendido por nuestro equipo') ||
+    t.includes('finalizamos la gestion por este medio') ||
+    t.includes('finalizamos la comunicacion por este medio') ||
+    t.includes('continuara con el expediente') ||
+    t.includes('continuara la gestion') ||
+    t.includes('el perito continuara la gestion') ||
+    t.includes('el perito se pondra en contacto con usted') ||
+    t.includes('se pondra en contacto con usted') ||
+    t.includes('el perito le llamara') ||
+    t.includes('le llamara') ||
+    t.includes('trasladamos la informacion al perito')
+  );
+}
+
+function isAllowedTerminalTurn({ currentStage, nextStage, userText, lastBotResponseType, responseType }) {
+  if (responseType !== 'cierre_definitivo') return false;
+
+  if (nextStage === 'finalizado') {
+    return lastBotResponseType === 'resumen_final' && isAffirmativeAck(userText);
+  }
+
+  if (nextStage === 'escalated') {
+    return (
+      (currentStage === 'consent' && isNegativeAck(userText)) ||
+      isExplicitHumanEscalationIntent(userText)
+    );
+  }
+
+  return false;
+}
+
 function buildBlockedTerminalRetryContext(currentStage) {
   const aiState = getNonTerminalAiStateForStage(currentStage);
   return `[SISTEMA: CONTINUAR_FLUJO_SIN_CERRAR stage=${aiState}]`;
+}
+
+function buildBlockedClosureRetryContext(currentStage) {
+  const aiState = getNonTerminalAiStateForStage(currentStage);
+  return `[SISTEMA: PROHIBIDO_CIERRE_SIN_RESUMEN stage=${aiState}]`;
 }
 
 function hasSharedLocation(conversation, currentLocationCoords) {
@@ -642,6 +685,34 @@ async function processMessage(waId, messageObj) {
       }
     }
 
+    const shouldRetryClosureLikeMessage =
+      hasOutgoingMessage &&
+      looksLikeClosureMessage(respuestaIA.mensaje_para_usuario) &&
+      !isAllowedTerminalTurn({
+        currentStage,
+        nextStage,
+        userText: text,
+        lastBotResponseType,
+        responseType,
+      });
+
+    if (shouldRetryClosureLikeMessage) {
+      const retriedClosureResponse = await requestAIResponse({
+        historial,
+        mensajeUsuario: text,
+        contextoSistema,
+        valoresExcel,
+        extraContext: buildBlockedClosureRetryContext(currentStage),
+      });
+      if (retriedClosureResponse.mensaje_para_usuario) {
+        respuestaIA = retriedClosureResponse;
+        responseType = String(respuestaIA.datos_extraidos?.tipo_respuesta || 'normal').trim() || 'normal';
+        hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
+        nextStage = ESTADO_IA_TO_STAGE[respuestaIA.datos_extraidos?.estado_expediente];
+        L.warn(`⚠️  IA intentó cerrar con texto equivalente a cierre desde stage=${currentStage}; se fuerza continuación del flujo`);
+      }
+    }
+
     let aiWantsToSummarizeOrClose =
       responseType === 'resumen_final' ||
       responseType === 'cierre_definitivo';
@@ -942,5 +1013,7 @@ module.exports = {
     normalizeSchedulePreference,
     shouldAssumeDigitalAcceptance,
     shouldBlockEarlyTerminalStage,
+    looksLikeClosureMessage,
+    isAllowedTerminalTurn,
   },
 };

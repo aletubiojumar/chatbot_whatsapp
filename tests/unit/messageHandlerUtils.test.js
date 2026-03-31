@@ -20,6 +20,8 @@ const {
   normalizeSchedulePreference,
   shouldAssumeDigitalAcceptance,
   shouldBlockEarlyTerminalStage,
+  looksLikeClosureMessage,
+  isAllowedTerminalTurn,
 } = _test;
 
 // ── detectEconomicEstimate ───────────────────────────────────────────────────
@@ -261,6 +263,54 @@ describe('shouldBlockEarlyTerminalStage', () => {
       userText: 'mañana',
       hasOutgoingMessage: true,
     }), false);
+  });
+});
+
+describe('looksLikeClosureMessage', () => {
+  test('detecta cierre tipo "le contactaremos en breve"', () => {
+    assert.equal(
+      looksLikeClosureMessage('Su caso está siendo atendido por nuestro equipo. Le contactaremos en breve. Gracias por su paciencia.'),
+      true
+    );
+  });
+
+  test('no marca una pregunta normal como cierre', () => {
+    assert.equal(
+      looksLikeClosureMessage('Gracias. Según nuestros datos, la dirección del riesgo es Calle Río Genil 3. ¿Es correcto?'),
+      false
+    );
+  });
+});
+
+describe('isAllowedTerminalTurn', () => {
+  test('permite cierre definitivo tras confirmar resumen final', () => {
+    assert.equal(isAllowedTerminalTurn({
+      currentStage: 'valoracion',
+      nextStage: 'finalizado',
+      userText: 'sí',
+      lastBotResponseType: 'resumen_final',
+      responseType: 'cierre_definitivo',
+    }), true);
+  });
+
+  test('bloquea texto de cierre sin resumen previo', () => {
+    assert.equal(isAllowedTerminalTurn({
+      currentStage: 'identification',
+      nextStage: 'finalizado',
+      userText: 'sí',
+      lastBotResponseType: 'normal',
+      responseType: 'normal',
+    }), false);
+  });
+
+  test('permite escalado cuando el usuario pide una persona', () => {
+    assert.equal(isAllowedTerminalTurn({
+      currentStage: 'identification',
+      nextStage: 'escalated',
+      userText: 'Quiero hablar con una persona',
+      lastBotResponseType: 'normal',
+      responseType: 'cierre_definitivo',
+    }), true);
   });
 });
 
