@@ -11,6 +11,7 @@ const path = require('path');
 const fs   = require('fs');
 const XLSX = require('xlsx');
 const { getBooking } = require('../src/calendar/appointmentScheduler');
+const { EXCEL_PATH } = require('../src/utils/pathConfig');
 
 const PDF_DIR = path.resolve(__dirname, '..', 'docs', 'conversations');
 
@@ -22,7 +23,6 @@ try {
   process.exit(1);
 }
 
-const EXCEL_PATH = process.env.EXCEL_PATH || path.join(__dirname, '..', 'data', 'allianz_latest.xlsx');
 const LOGIN_URL = String(process.env.LOGIN_URL || '').trim();
 const USERNAME = String(process.env.USERNAME || '').trim();
 const PASSWORD = String(process.env.PASSWORD || '').trim();

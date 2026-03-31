@@ -4,9 +4,8 @@ const XLSX = require('xlsx');
 const path = require('path');
 const fs   = require('fs');
 const os   = require('os');
+const { EXCEL_PATH, CONV_STATE_FILE } = require('./pathConfig');
 
-const EXCEL_PATH           = process.env.EXCEL_PATH || path.join(__dirname, '..', '..', 'data', 'allianz_latest.xlsx');
-const STATE_FILE_PATH      = process.env.CONV_STATE_FILE  || path.join(path.dirname(EXCEL_PATH), 'bot_state.xlsx');
 const BUSINESS_HOURS_START = Number(process.env.BUSINESS_HOURS_START  || 9);
 const BUSINESS_HOURS_END   = Number(process.env.BUSINESS_HOURS_END    || 20);
 const CLEANUP_DAYS         = Number(process.env.SINIESTRO_CLEANUP_DAYS || 7);
@@ -115,22 +114,22 @@ function saveWorkbook(wb) {
 // ── Estado técnico en archivo separado ───────────────────────────────────────
 
 function readStateWorkbook() {
-  if (!fs.existsSync(STATE_FILE_PATH)) {
+  if (!fs.existsSync(CONV_STATE_FILE)) {
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet([Object.values(STATE_FIELDS)]);
     XLSX.utils.book_append_sheet(wb, ws, STATE_SHEET_NAME);
     return wb;
   }
-  return XLSX.readFile(STATE_FILE_PATH);
+  return XLSX.readFile(CONV_STATE_FILE);
 }
 
 function saveStateWorkbook(wb) {
-  const tmp = `${STATE_FILE_PATH}.${process.pid}.tmp`;
+  const tmp = `${CONV_STATE_FILE}.${process.pid}.tmp`;
   XLSX.writeFile(wb, tmp, { bookType: 'xlsx' });
   if (os.platform() !== 'win32') {
-    fs.renameSync(tmp, STATE_FILE_PATH);
+    fs.renameSync(tmp, CONV_STATE_FILE);
   } else {
-    fs.writeFileSync(STATE_FILE_PATH, fs.readFileSync(tmp));
+    fs.writeFileSync(CONV_STATE_FILE, fs.readFileSync(tmp));
     fs.unlinkSync(tmp);
   }
 }

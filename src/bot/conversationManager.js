@@ -2,7 +2,6 @@
 // Estado técnico en DynamoDB (multi-instancia); datos de negocio en Excel.
 
 const fs   = require('fs');
-const path = require('path');
 
 const {
   normalizePhone,
@@ -16,6 +15,7 @@ const {
 } = require('../utils/excelManager');
 
 const dynamoStateStore = require('../utils/dynamoStateStore');
+const { EXCEL_PATH, CONV_STATE_FILE } = require('../utils/pathConfig');
 
 const INACTIVITY_MS = Number(
   process.env.INACTIVITY_INTERVAL_MINUTES ||
@@ -72,10 +72,7 @@ migrateStateSheetToFile();
 // el servidor. Solo hace algo si bot_state.xlsx existe (primera vez con DynamoDB).
 
 async function init() {
-  const stateFilePath = process.env.CONV_STATE_FILE ||
-    path.join(path.dirname(process.env.EXCEL_PATH || path.join(__dirname, '..', '..', 'data', 'allianz_latest.xlsx')), 'bot_state.xlsx');
-
-  if (!fs.existsSync(stateFilePath)) return;
+  if (!fs.existsSync(CONV_STATE_FILE)) return;
 
   const states = readAllStatesFromExcel();
   if (!states.length) return;
@@ -86,8 +83,8 @@ async function init() {
     await dynamoStateStore.upsertState(state.waId, state);
   }
 
-  fs.renameSync(stateFilePath, `${stateFilePath}.migrated`);
-  console.log(`✅ Migración bot_state.xlsx → DynamoDB completada (archivo renombrado a .migrated)`);
+  fs.renameSync(CONV_STATE_FILE, `${CONV_STATE_FILE}.migrated`);
+  console.log(`✅ Migración bot_state.xlsx → DynamoDB completada (${EXCEL_PATH} | archivo de estado renombrado a .migrated)`);
 }
 
 // ── Helpers internos ──────────────────────────────────────────────────────────

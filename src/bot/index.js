@@ -2,6 +2,7 @@
 require('dotenv').config({ override: true });
 const express = require('express');
 const bodyParser = require('body-parser');
+const os = require('os');
 
 const { processMessage } = require('./messageHandler');
 const adapter = require('../channels/whatsappAdapter');
@@ -14,6 +15,7 @@ const { startScheduler } = require('./reminderScheduler');
 const { cleanOldLogs } = require('../utils/fileLogger');
 const resourceMonitor = require('../utils/resourceMonitor');
 const { getQueueStatus } = require('./peritolineAutoSync');
+const { EXCEL_PATH } = require('../utils/pathConfig');
 
 const app = express();
 app.use(bodyParser.json());
@@ -38,6 +40,10 @@ app.get('/health', (req, res) => {
   const lastRes = resourceMonitor.getLastStats();
   res.json({
     status: 'healthy',
+    host: os.hostname(),
+    pid: process.pid,
+    cwd: process.cwd(),
+    excelPath: EXCEL_PATH,
     gemini: {
       model: process.env.GEMINI_MODEL || 'n/a',
       key: Boolean(process.env.GEMINI_API_KEY),
@@ -165,7 +171,7 @@ app.post('/webhook', async (req, res) => {
   const logPreview = msg.type === 'location'
     ? `[ubicación GPS lat=${msg.location?.latitude} lon=${msg.location?.longitude}]`
     : `"${msg.text.slice(0, 60)}${msg.text.length > 60 ? '[…]' : ''}"`;
-  log.info(`📥 Recibido de [${log.maskPhone(msg.userId)}]: ${logPreview}`);;
+  log.info(`📥 Recibido de [${log.maskPhone(msg.userId)}] msgId:${msg.messageId} host:${os.hostname()} pid:${process.pid}: ${logPreview}`);
 
   enqueueForUser(msg.userId, async () => {
     await _acquireSlot();
@@ -192,6 +198,9 @@ app.post('/webhook', async (req, res) => {
     console.log(`✅ Bot escuchando en ${HOST}:${PORT}`);
     console.log(`🌐 Health: http://${HOST}:${PORT}/health`);
     console.log(`📱 Phone Number ID: ${process.env.PHONE_NUMBER_ID}`);
+    console.log(`🖥️  Host: ${os.hostname()} | pid: ${process.pid}`);
+    console.log(`📂 cwd: ${process.cwd()}`);
+    console.log(`📄 EXCEL_PATH resuelto: ${EXCEL_PATH}`);
     console.log(`🔑 Token configurado: ${Boolean(process.env.USER_ACCESS_TOKEN)}\n`);
     startScheduler();
     resourceMonitor.startMonitoring();

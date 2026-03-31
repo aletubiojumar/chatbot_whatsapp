@@ -3,19 +3,16 @@
 // número y registra la conversación en conversationManager.
 
 require('dotenv').config({ override: true });
-const path = require('path');
 const XLSX = require('xlsx');
 
 const { sendInitialTemplate, buildSaludoByHour, buildInitialTemplateText } = require('./bot/templateSender');
 const conversationManager = require('./bot/conversationManager');
 const { triggerEncargoSync } = require('./bot/peritolineAutoSync');
 const { readAllStatesFromExcel } = require('./utils/excelManager');
+const { EXCEL_PATH } = require('./utils/pathConfig');
 const log = require('./utils/logger');
 
 // ── Configuración ─────────────────────────────────────────────────────────
-
-const EXCEL_PATH = process.env.EXCEL_PATH
-  || path.join(__dirname, '..', 'data', 'allianz_latest.xlsx');
 
 // Estado que indica que el registro debe enviarse (ajustar según el Excel)
 const ESTADO_PENDIENTE = (process.env.EXCEL_ESTADO_PENDIENTE || 'OK').toUpperCase();
