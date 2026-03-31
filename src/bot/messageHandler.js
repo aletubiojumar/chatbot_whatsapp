@@ -301,7 +301,7 @@ async function processMessage(waId, messageObj) {
     if (!stateCheck.ok) {
       L.log(`⛔ Bloqueado (${stateCheck.reason}) stage=${conversation?.stage}`);
       if (stateCheck.aiBehavior === 'reply_once_then_close') {
-        const { mensajesPrevios, historial, valoresExcel } = buildAIConversationContext(conversation, nexp);
+        const { mensajesPrevios, historial, valoresExcel } = await buildAIConversationContext(conversation, nexp);
         const terminalMarker = conversation?.stage === 'finalizado'
           ? '[SISTEMA: TERMINAL_FINALIZADO]'
           : '[SISTEMA: TERMINAL_ESCALADO]';

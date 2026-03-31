@@ -78,9 +78,9 @@ async function upsertState(waId, patch = {}) {
   if (!Object.keys(patch).length) return;
 
   const key = String(waId);
-  const ExpressionAttributeNames = { '#waId': 'waId' };
-  const ExpressionAttributeValues = { ':waId': key };
-  const sets = ['#waId = :waId'];
+  const ExpressionAttributeNames = {};
+  const ExpressionAttributeValues = {};
+  const sets = [];
 
   // Derivar status desde stage cuando stage cambia
   const enriched = { ...patch };
