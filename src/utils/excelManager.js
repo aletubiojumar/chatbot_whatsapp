@@ -472,6 +472,7 @@ function readAllConversations() {
  * Acepta los mismos campos lógicos definidos en FIELD_TO_COL.
  */
 function updateConversationExcel(waId, fields) {
+  acquireLock();
   try {
     const wb      = readWorkbook();
     const ws      = wb.Sheets[wb.SheetNames[0]];
@@ -504,6 +505,8 @@ function updateConversationExcel(waId, fields) {
   } catch (err) {
     console.error('❌ Error actualizando conversación en Excel:', err.message);
     return null;
+  } finally {
+    releaseLock();
   }
 }
 
@@ -771,82 +774,6 @@ function cleanOldRows() {
   }
 }
 
-/**
- * Aplica techPatch (hoja __bot_state) y excelPatch (hoja principal) en un único
- * ciclo lectura→modificación→guardado protegido por lockfile.
- * Usar siempre este método en lugar de llamar a upsertStateInExcel +
- * updateConversationExcel por separado para evitar escrituras concurrentes.
- */
-function applyPatches(waId, techPatch = {}, excelPatch = {}) {
-  acquireLock();
-  try {
-    // ── Patch archivo de estado (bot_state.xlsx) ──────────────────────────────
-    const stateWb      = readStateWorkbook();
-    const stateWs      = getOrCreateStateSheet(stateWb);
-    let   stateHeaders = getStateHeaders(stateWs);
-    stateHeaders       = ensureStateColumns(stateWs, stateHeaders);
-
-    let stateRow = findStateRowByWaId(stateWs, stateHeaders, waId);
-    if (stateRow === -1) stateRow = appendSheetRow(stateWs);
-
-    const prev = rowToState(stateWs, stateHeaders, stateRow) || { waId: String(waId) };
-    const next = { ...prev, ...techPatch, waId: String(waId) };
-    next.status = next.stage === 'escalated' ? 'escalated' : 'pending';
-
-    setCellValue(stateWs, stateRow, stateHeaders[STATE_FIELDS.waId],   next.waId);
-    setCellValue(stateWs, stateRow, stateHeaders[STATE_FIELDS.status],  String(next.status  || 'pending'));
-    setCellValue(stateWs, stateRow, stateHeaders[STATE_FIELDS.stage],   String(next.stage   || 'consent'));
-    setCellValue(stateWs, stateRow, stateHeaders[STATE_FIELDS.lastBotResponseType], String(next.lastBotResponseType || ''));
-
-    const numericStateFields = [
-      STATE_FIELDS.locationRequestCount,
-      STATE_FIELDS.attempts,
-      STATE_FIELDS.inactivityAttempts,
-      STATE_FIELDS.nextReminderAt,
-      STATE_FIELDS.lastUserMessageAt,
-      STATE_FIELDS.lastReminderAt,
-      STATE_FIELDS.lastMessageAt,
-    ];
-    for (const fieldName of numericStateFields) {
-      const value = next[fieldName];
-      const c     = stateHeaders[fieldName];
-      if (value === null || value === undefined || value === '') setCellValue(stateWs, stateRow, c, '');
-      else setCellNumber(stateWs, stateRow, c, Number(value));
-    }
-
-    const mensajes = Array.isArray(next.mensajes) ? next.mensajes : [];
-    setCellValue(stateWs, stateRow, stateHeaders[STATE_FIELDS.mensajes], JSON.stringify(mensajes));
-
-    saveStateWorkbook(stateWb);
-
-    // ── Patch hoja principal del Excel de negocio ─────────────────────────────
-    if (Object.keys(excelPatch).length) {
-      const wb          = readWorkbook();
-      const mainWs      = wb.Sheets[wb.SheetNames[0]];
-      let   mainHeaders = getHeaders(mainWs);
-      mainHeaders       = ensureAllColumns(mainWs, mainHeaders);
-
-      const mainRow = findRowByPhone(mainWs, mainHeaders, waId);
-      if (mainRow === -1) {
-        console.warn(`⚠️  Excel: waId=${waId} no encontrado para actualizar`);
-      } else {
-        for (const [field, colName] of Object.entries(FIELD_TO_COL)) {
-          if (!(field in excelPatch)) continue;
-          const c     = mainHeaders[colName];
-          if (c === undefined) continue;
-          const value = excelPatch[field];
-          if (value === null)              setCellValue(mainWs, mainRow, c, '');
-          else if (typeof value === 'number') setCellNumber(mainWs, mainRow, c, value);
-          else                               setCellValue(mainWs, mainRow, c, String(value));
-        }
-        saveWorkbook(wb);
-      }
-    }
-  } finally {
-    releaseLock();
-  }
-}
-
 module.exports = {
   isBusinessHours,
   normalizePhone,
@@ -861,5 +788,4 @@ module.exports = {
   readConversationByNexp,
   readAllConversations,
   updateConversationExcel,
-  applyPatches,
 };

@@ -2,29 +2,33 @@
 const conversationManager = require('./conversationManager');
 const { procesarConIA, translateMessagesToSpanish } = require('../ai/aiModel');
 const adapter             = require('../channels/whatsappAdapter');
-const { canProcess, isValidTransition } = require('./stateMachine');
+const { canProcess }      = require('./stateMachine');
 const { triggerEncargoSync } = require('./peritolineAutoSync');
 const { generateConversationPdf } = require('../utils/pdfGenerator');
 const { buildInitialTemplateText } = require('./templateSender');
 const fileLogger          = require('../utils/fileLogger');
 const axios = require('axios');
+const {
+  findNextAvailableSlot,
+  bookAppointment,
+  getBooking,
+  saveProposedSlot,
+  formatSlotForUser,
+  detectPreferenceFromText,
+} = require('../calendar/appointmentScheduler');
+
+// Activo solo si están configuradas las credenciales de Microsoft Graph
+const CALENDAR_ENABLED = !!(process.env.OUTLOOK_CALENDAR_USER && process.env.MICROSOFT_TENANT_ID);
+
+// Mapping nombre perito → email para añadirlo como attendee en el evento de Outlook
+const PERITO_EMAIL_MAP = (() => {
+  try { return JSON.parse(process.env.OUTLOOK_PERITO_EMAILS || '{}'); } catch { return {}; }
+})();
 
 // Mapeo entre los valores que devuelve la IA y los stages internos
 const ESTADO_IA_TO_STAGE = {
-  identificacion:  'identification',
-  valoracion:      'valoracion',
-  agendando:       'agendando',
   finalizado:      'finalizado',
   escalado_humano: 'escalated',
-};
-
-const STAGE_TO_ESTADO_IA = {
-  consent:        'identificacion',
-  identification: 'identificacion',
-  valoracion:     'valoracion',
-  agendando:      'agendando',
-  finalizado:     'finalizado',
-  escalated:      'escalado_humano',
 };
 
 // Cache de CP → localidad para no repetir peticiones
@@ -62,57 +66,6 @@ function isPeritoAttendeeMentionInUser(text) {
 function isAffirmativeAck(text) {
   const t = String(text || '').trim().toLowerCase();
   return /^(si|sí|ok|vale|perfecto|correcto|todo ok|todo correcto|de acuerdo|confirmado)$/.test(t);
-}
-
-function isNegativeAck(text) {
-  const t = norm(text);
-  return /^(no|nop|negativo|mejor no|prefiero no|no quiero|no deseo continuar|no acepto|rechazo)$/.test(t);
-}
-
-function isExplicitHumanEscalationIntent(text) {
-  const t = norm(text);
-  return (
-    t.includes('hablar con una persona') ||
-    t.includes('hablar con alguien') ||
-    t.includes('persona real') ||
-    t.includes('atencion humana') ||
-    t.includes('atencion telefonica') ||
-    t.includes('que me llamen') ||
-    t.includes('que me llame') ||
-    t.includes('prefiero que me llamen') ||
-    t.includes('prefiero hablar con') ||
-    t.includes('quiero hablar con') ||
-    t.includes('quiero que me llamen') ||
-    t.includes('llamadme') ||
-    t.includes('llamame') ||
-    t.includes('llamenme') ||
-    (t.includes('humano')) ||
-    (t.includes('agente')) ||
-    (t.includes('operador')) ||
-    (t.includes('por telefono') && !isAffirmativeAck(text))
-  );
-}
-
-function shouldBlockEarlyTerminalStage({ currentStage, nextStage, userText, hasOutgoingMessage }) {
-  if (!hasOutgoingMessage) return false;
-  if (!['consent', 'identification'].includes(String(currentStage || '').trim())) return false;
-  if (nextStage === 'finalizado') return true;
-  if (nextStage !== 'escalated') return false;
-  if (currentStage === 'consent' && isNegativeAck(userText)) return false;
-  if (isExplicitHumanEscalationIntent(userText)) return false;
-  return true;
-}
-
-function canApplyStageTransition(currentStage, nextStage) {
-  const from = String(currentStage || 'consent').trim() || 'consent';
-  const to = String(nextStage || '').trim();
-  if (!to) return false;
-  if (from === to) return true;
-  return isValidTransition(from, to);
-}
-
-function getNonTerminalAiStateForStage(stage) {
-  return STAGE_TO_ESTADO_IA[String(stage || 'consent').trim()] || 'identificacion';
 }
 
 function hasSharedLocation(conversation, currentLocationCoords) {
@@ -194,19 +147,6 @@ function detectEconomicEstimate(text) {
   return null;
 }
 
-function normalizeSchedulePreference(preferencia) {
-  const pref = norm(preferencia);
-  if (pref === 'manana') return 'Mañana';
-  if (pref === 'tarde') return 'Tarde';
-  return '';
-}
-
-function shouldAssumeDigitalAcceptance({ extractedDigital, existingDigital, preferredSchedule }) {
-  if (!preferredSchedule) return false;
-  if (typeof extractedDigital === 'boolean') return extractedDigital;
-  return String(existingDigital || '').trim().toLowerCase() !== 'no';
-}
-
 async function reverseGeocode(lat, lon) {
   try {
     const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&addressdetails=1&accept-language=es`;
@@ -253,9 +193,9 @@ async function lookupCP(text) {
   return null;
 }
 
-function buildAIConversationContext(conversation, nexp) {
+async function buildAIConversationContext(conversation, nexp) {
   const userData = conversation?.userData || {};
-  let mensajesPrevios = conversationManager.getMensajes(conversation?.waId);
+  let mensajesPrevios = await conversationManager.getMensajes(conversation?.waId);
 
   if (mensajesPrevios.length === 0 && userData.aseguradora && nexp) {
     mensajesPrevios = [{
@@ -337,7 +277,7 @@ async function processMessage(waId, messageObj) {
     let stageAplicado = null;
 
     // Buscar el nexp vinculado a este número
-    const nexp = conversationManager.getNexpByWaId(waId);
+    const nexp = await conversationManager.getNexpByWaId(waId);
     if (!nexp) {
       console.log(`⚠️  Número ${waId} sin expediente vinculado — ignorando`);
       return;
@@ -356,7 +296,7 @@ async function processMessage(waId, messageObj) {
     console.log('─'.repeat(65));
 
     // ── Máquina de estados ───────────────────────────────────────────────
-    const conversation = conversationManager.getConversation(waId);
+    const conversation = await conversationManager.getConversation(waId);
     const stateCheck = canProcess(conversation);
     if (!stateCheck.ok) {
       L.log(`⛔ Bloqueado (${stateCheck.reason}) stage=${conversation?.stage}`);
@@ -385,10 +325,10 @@ async function processMessage(waId, messageObj) {
             { direction: 'in',  text,            timestamp: new Date().toISOString() },
             { direction: 'out', text: terminalMessage, timestamp: new Date().toISOString() },
           ];
-          conversationManager.recordResponse(waId);
+          await conversationManager.recordResponse(waId);
         }
 
-        conversationManager.createOrUpdateConversation(waId, terminalUpdates);
+        await conversationManager.createOrUpdateConversation(waId, terminalUpdates);
       }
       // Guardar coordenadas aunque la conversación esté cerrada y sincronizar PeritoLine
       if (locationCoords) {
@@ -397,7 +337,7 @@ async function processMessage(waId, messageObj) {
           lateUpdate.status = 'pending'; // desactivar standby al recibir la ubicación
           lateUpdate.locationStandbyUntil = 0;
         }
-        conversationManager.createOrUpdateConversation(waId, lateUpdate);
+        await conversationManager.createOrUpdateConversation(waId, lateUpdate);
         triggerEncargoSync(nexp, 'coordenadas_tardias', '', false, true);
         L.log(`📍 Coordenadas recibidas en stage terminal, guardadas y sync disparado: ${locationCoords}`);
       }
@@ -408,7 +348,7 @@ async function processMessage(waId, messageObj) {
     const isFirstResponse = !conversation.lastUserMessageAt;
 
     // Registrar actividad (resetea inactivityAttempts y nextReminderAt)
-    conversationManager.recordUserMessage(waId);
+    await conversationManager.recordUserMessage(waId);
 
     // Leer datos del siniestro y mensajes desde Excel
     const {
@@ -416,7 +356,7 @@ async function processMessage(waId, messageObj) {
       mensajesPrevios,
       historial,
       valoresExcel,
-    } = buildAIConversationContext(conversation, nexp);
+    } = await buildAIConversationContext(conversation, nexp);
 
     const lastOutMsg      = [...mensajesPrevios].reverse().find(m => m?.direction === 'out') || null;
     const lastBotMessage  = lastOutMsg?.text || '';
@@ -459,8 +399,7 @@ async function processMessage(waId, messageObj) {
     }
     // tipoVivienda === 'unifamiliar': la IA gestiona sin hint adicional
 
-    //contextoSistema += '\n[Videoperitación]: Si el usuario no expresa dudas, no expliques funcionamiento; pregunta disponibilidad directa (mañana/tarde).';
-    contextoSistema += '\n[CIERRE SIN CALENDARIO]: No hay agenda automática. Si el asegurado acepta la videoperitación e indica preferencia horaria (mañana o tarde), confirma que el equipo gestionará la cita con esa preferencia y emite un mensaje final. Marca estado_expediente="finalizado" y tipo_respuesta="cierre_definitivo".';
+    contextoSistema += '\n[Videoperitación]: Si el usuario no expresa dudas, no expliques funcionamiento; pregunta disponibilidad directa (mañana/tarde).';
 
     // Estado de espera de ubicación
     if (conversation.status === 'awaiting_location') {
@@ -495,6 +434,78 @@ async function processMessage(waId, messageObj) {
     }
     if (identityConfirmedNow) {
       contextoSistema += '\n[CONFIRMACIÓN IDENTIDAD]: El usuario responde afirmativamente a tu pregunta de identidad/relación. Da la identificación por confirmada y avanza al siguiente dato pendiente. PROHIBIDO repetir la misma pregunta de identidad.';
+    }
+
+    // ── Calendario Outlook: consultar slot ANTES de llamar a la IA ───────
+    if (CALENDAR_ENABLED) {
+      const digitalSi       = conversation.digital === 'Sí';
+      const prefFromText    = detectPreferenceFromText(text);
+      const prefFromPrev    = String(conversation.horario || '').trim();
+      const currentPref     = prefFromText || prefFromPrev;
+      const existingBooking = getBooking(nexp);
+      const slotConfirmed   = existingBooking?.status === 'confirmed';
+
+      if (digitalSi && currentPref && !slotConfirmed) {
+        const proposedBooking = existingBooking?.status === 'proposed' && existingBooking?.slotStart;
+
+        if (proposedBooking && isAffirmativeAck(text)) {
+          // Usuario confirma el slot propuesto → crear la cita ahora
+          try {
+            const proposedSlot = { start: new Date(existingBooking.slotStart) };
+            const [attNombreRaw = '', , attTelefonoRaw = ''] = String(conversation.attPerito || '').split(' - ');
+            const attNombreFinal   = attNombreRaw   !== 'sin indicar' ? attNombreRaw   : '';
+            const attTelefonoFinal = attTelefonoRaw !== 'sin indicar' ? attTelefonoRaw : conversation.waId || '';
+            const virtualPeritoKey = (process.env.PERITOLINE_VIRTUAL_PERITO_NAME || '').toUpperCase();
+            const peritoEmail      = PERITO_EMAIL_MAP[virtualPeritoKey] || '';
+
+            // URL de la plataforma web de videoperitación de la aseguradora
+            const aseguradoraUrl = (() => {
+              try {
+                const urlMap = JSON.parse(process.env.OUTLOOK_ASEGURADORA_URLS || '{}');
+                const aseg   = String(valoresExcel.aseguradora || '').trim().toUpperCase();
+                return urlMap[aseg] || process.env.OUTLOOK_ASEGURADORA_URL_DEFAULT || '';
+              } catch { return process.env.OUTLOOK_ASEGURADORA_URL_DEFAULT || ''; }
+            })();
+
+            const result = await bookAppointment({
+              nexp,
+              slot:       proposedSlot,
+              attName:    attNombreFinal,
+              attPhone:   attTelefonoFinal,
+              peritoEmail,
+              peritoName: virtualPeritoKey,
+              aseguradoraUrl,
+            });
+
+            if (result.success) {
+              const slotText = formatSlotForUser(proposedSlot);
+              contextoSistema += `\n[CITA CONFIRMADA EN CALENDARIO]: La videoperitación ha sido registrada en el calendario de Outlook para el ${slotText}. Confirma al asegurado la fecha y hora exacta y marca estado_expediente="finalizado".`;
+              L.log(`📅 Cita Outlook creada: ${slotText}`);
+            }
+          } catch (err) {
+            contextoSistema += `\n[ERROR CALENDARIO]: No se pudo crear la cita (${err.message}). Informa al asegurado de que le confirmaremos la fecha por otro medio y finaliza la conversación.`;
+            L.err(`❌ Error creando cita Outlook: ${err.message}`);
+          }
+
+        } else if (!proposedBooking) {
+          // Aún no hay slot propuesto → buscar y proponer uno
+          try {
+            const slot = await findNextAvailableSlot(currentPref, nexp);
+            if (slot) {
+              saveProposedSlot(nexp, slot);
+              const slotText = formatSlotForUser(slot);
+              contextoSistema += `\n[SLOT DISPONIBLE EN OUTLOOK]: Hay disponibilidad el ${slotText}. Propón EXACTAMENTE esta fecha y hora al asegurado para que confirme. No marques "finalizado" hasta que el asegurado confirme.`;
+              L.log(`📅 Slot propuesto: ${slotText}`);
+            } else {
+              contextoSistema += `\n[SIN DISPONIBILIDAD]: No hay huecos disponibles en los próximos ${process.env.CALENDAR_HORIZON_DAYS || 5} días laborables para la preferencia "${currentPref}". Informa al asegurado y ofrece contactar por teléfono para gestionar la cita manualmente.`;
+              L.warn(`⚠️  Sin disponibilidad en Outlook para "${currentPref}"`);
+            }
+          } catch (err) {
+            L.err(`❌ Error consultando Outlook: ${err.message}`);
+            // No bloqueamos el flujo: la IA continúa sin la info del slot
+          }
+        }
+      }
     }
 
     // ── Llamada a la IA ──────────────────────────────────────────────────
@@ -570,57 +581,7 @@ async function processMessage(waId, messageObj) {
       }
     }
 
-    let hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
-    let proposedStage = ESTADO_IA_TO_STAGE[String(respuestaIA.datos_extraidos?.estado_expediente || '').trim()];
-
-    if (shouldBlockEarlyTerminalStage({
-      currentStage: conversation.stage,
-      nextStage: proposedStage,
-      userText: text,
-      hasOutgoingMessage,
-    })) {
-      const blockedStageRetry = await requestAIResponse({
-        historial,
-        mensajeUsuario: text,
-        contextoSistema,
-        valoresExcel,
-        extraContext: [
-          '[SISTEMA: CIERRE_TEMPRANO_BLOQUEADO]',
-          'Está prohibido cerrar o escalar la conversación en este punto del flujo.',
-          'No envíes despedida ni mensaje terminal.',
-          'Continúa con el siguiente dato pendiente y usa un estado no terminal: "identificacion", "valoracion" o "agendando".',
-        ].join('\n'),
-      });
-
-      if (blockedStageRetry.mensaje_para_usuario) {
-        respuestaIA = blockedStageRetry;
-        responseType = String(respuestaIA.datos_extraidos?.tipo_respuesta || 'normal').trim() || 'normal';
-        hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
-        proposedStage = ESTADO_IA_TO_STAGE[String(respuestaIA.datos_extraidos?.estado_expediente || '').trim()];
-        L.warn(`⚠️  La IA intentó cerrar demasiado pronto en stage ${conversation.stage} — se solicitó una nueva respuesta`);
-      }
-    }
-
-    if (shouldBlockEarlyTerminalStage({
-      currentStage: conversation.stage,
-      nextStage: proposedStage,
-      userText: text,
-      hasOutgoingMessage,
-    })) {
-      if (!respuestaIA.datos_extraidos || typeof respuestaIA.datos_extraidos !== 'object') {
-        respuestaIA.datos_extraidos = {};
-      }
-      respuestaIA.mensaje_para_usuario = '';
-      respuestaIA.datos_extraidos.estado_expediente = getNonTerminalAiStateForStage(conversation.stage);
-      respuestaIA.datos_extraidos.tipo_respuesta = 'normal';
-      responseType = 'normal';
-      proposedStage = ESTADO_IA_TO_STAGE[respuestaIA.datos_extraidos.estado_expediente];
-      hasOutgoingMessage = false;
-      L.warn(`⚠️  Respuesta terminal prematura descartada por backend en stage ${conversation.stage}`);
-    }
-
-    L.log(`🧠 IA datos_extraidos: ${JSON.stringify(respuestaIA.datos_extraidos || {})}`);
-    L.log(`🧠 IA tipo=${responseType} estado=${String(respuestaIA.datos_extraidos?.estado_expediente || '').trim()}`);
+    const hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
 
     // Persistir mensajes y datos extraídos en el Excel
     if (respuestaIA.mensaje_entendido) {
@@ -677,17 +638,8 @@ async function processMessage(waId, messageObj) {
       if (typeof acepta_videollamada === 'boolean') {
         excelUpdates.digital = acepta_videollamada ? 'Sí' : 'No';
       }
-      const horarioPreferido = normalizeSchedulePreference(preferencia_horaria);
-      if (horarioPreferido) {
-        excelUpdates.horario = horarioPreferido;
-        if (shouldAssumeDigitalAcceptance({
-          extractedDigital: acepta_videollamada,
-          existingDigital: conversation.digital,
-          preferredSchedule: horarioPreferido,
-        })) {
-          excelUpdates.digital = 'Sí';
-        }
-      }
+      if (preferencia_horaria === 'mañana') excelUpdates.horario = 'Mañana';
+      else if (preferencia_horaria === 'tarde') excelUpdates.horario = 'Tarde';
       if (locationCoords) excelUpdates.coordenadas = locationCoords;
       if (tipo_respuesta === 'peticion_ubicacion') {
         excelUpdates.locationRequestCount = locationRequestCount + 1;
@@ -712,9 +664,7 @@ async function processMessage(waId, messageObj) {
 
       const nuevoStage = ESTADO_IA_TO_STAGE[estado_expediente];
       if (nuevoStage) {
-        if (!canApplyStageTransition(conversation.stage, nuevoStage)) {
-          L.warn(`⚠️  Transición de stage ignorada: ${conversation.stage} → ${nuevoStage}`);
-        } else if (!hasOutgoingMessage && nuevoStage === 'escalated') {
+        if (!hasOutgoingMessage && nuevoStage === 'escalated') {
           stageAplicado = nuevoStage;
           excelUpdates.stage = nuevoStage;
           excelUpdates.contacto = 'Sí';
@@ -724,20 +674,27 @@ async function processMessage(waId, messageObj) {
         } else {
           stageAplicado = nuevoStage;
           excelUpdates.stage = nuevoStage;
-          if (nuevoStage === 'finalizado' || nuevoStage === 'escalated') {
-            excelUpdates.contacto = 'Sí'; // Conversación terminada con el asegurado
-          }
-          if (conversation.stage !== nuevoStage) {
-            L.log(`🔄 Stage → ${nuevoStage}`);
-          }
+          excelUpdates.contacto = 'Sí'; // Conversación terminada con el asegurado
+          L.log(`🔄 Stage → ${nuevoStage}`);
         }
       }
 
-      conversationManager.createOrUpdateConversation(waId, excelUpdates);
+      // ── Calendario Outlook: guardar datos de cita confirmada en Excel ──
+      if (CALENDAR_ENABLED) {
+        const booking = getBooking(nexp);
+        if (booking?.status === 'confirmed' && booking.slotStart) {
+          const slotDate = new Date(booking.slotStart);
+          excelUpdates.citaFecha     = slotDate.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
+          excelUpdates.citaHora      = `${String(slotDate.getHours()).padStart(2, '0')}:${String(slotDate.getMinutes()).padStart(2, '0')}`;
+          excelUpdates.citaOutlookId = booking.outlookEventId || '';
+        }
+      }
+
+      await conversationManager.createOrUpdateConversation(waId, excelUpdates);
 
       // Primera respuesta del usuario → asignar perito + marcar contacto en PeritoLine
       if (isFirstResponse) {
-        conversationManager.createOrUpdateConversation(waId, { contacto: 'Sí' });
+        await conversationManager.createOrUpdateConversation(waId, { contacto: 'Sí' });
         triggerEncargoSync(nexp, 'primera_respuesta');
         L.log(`🔗 Primera respuesta → sync PeritoLine iniciado (asignar perito + contacto)`);
       }
@@ -765,7 +722,7 @@ async function processMessage(waId, messageObj) {
 
       // Generar PDF de transcripción al finalizar la conversación
       if (stageAplicado === 'finalizado' || stageAplicado === 'escalated') {
-        const allMsgs = excelUpdates.mensajes || conversationManager.getMensajes(waId);
+        const allMsgs = excelUpdates.mensajes || await conversationManager.getMensajes(waId);
         const pdfExtra = {
           stage:     stageAplicado,
           contacto:  excelUpdates.contacto,
@@ -817,7 +774,7 @@ async function processMessage(waId, messageObj) {
     if (hasOutgoingMessage) {
       const result = await adapter.sendText(waId, respuestaIA.mensaje_para_usuario);
       L.log(`✅ Enviado (msgId: ${result?.messageId}) | entendido=${respuestaIA.mensaje_entendido}`);
-      conversationManager.recordResponse(waId);
+      await conversationManager.recordResponse(waId);
     } else {
       L.warn('⚠️  La IA no devolvió un mensaje saliente y no se envía texto desde código');
     }
@@ -826,7 +783,7 @@ async function processMessage(waId, messageObj) {
     // si el usuario vuelve a escribir. El paso a "cerrado" se hace en canProcess.
 
   } catch (error) {
-    const nexpCtx = conversationManager.getNexpByWaId(waId) || waId;
+    const nexpCtx = (await conversationManager.getNexpByWaId(waId)) || waId;
     console.error(`[${nexpCtx}] ❌ Error crítico en processMessage:`, error);
     fileLogger.writeLog(nexpCtx, 'ERROR', `Error crítico en processMessage: ${error?.stack || error?.message || error}`);
   }
@@ -840,14 +797,7 @@ module.exports = {
     hasSharedLocation,
     normalizeContactPhone,
     isAffirmativeAck,
-    isNegativeAck,
-    isExplicitHumanEscalationIntent,
-    canApplyStageTransition,
-    getNonTerminalAiStateForStage,
     extractRelationship,
     analyzeAddressType,
-    normalizeSchedulePreference,
-    shouldAssumeDigitalAcceptance,
-    shouldBlockEarlyTerminalStage,
   },
 };

@@ -1,5 +1,8 @@
 // src/bot/conversationManager.js
-// Estado técnico y datos de negocio persistidos en Excel.
+// Estado técnico en DynamoDB (multi-instancia); datos de negocio en Excel.
+
+const fs   = require('fs');
+const path = require('path');
 
 const {
   normalizePhone,
@@ -7,12 +10,12 @@ const {
   extractTechnicalStateFromExcel,
   removeTechnicalColumns,
   migrateStateSheetToFile,
-  readStateByWaId,
   readAllStatesFromExcel,
   upsertStateInExcel,
   updateConversationExcel,
-  applyPatches,
 } = require('../utils/excelManager');
+
+const dynamoStateStore = require('../utils/dynamoStateStore');
 
 const INACTIVITY_MS = Number(
   process.env.INACTIVITY_INTERVAL_MINUTES ||
@@ -21,6 +24,7 @@ const INACTIVITY_MS = Number(
 
 // normalizeWaId es la misma lógica que normalizePhone
 const normalizeWaId = normalizePhone;
+
 const TECH_FIELDS = new Set([
   'status',
   'stage',
@@ -45,12 +49,13 @@ const EXCEL_FIELDS = new Set([
   'coordenadas',
 ]);
 
+// ── Migraciones síncronas de formato legado (se ejecutan al importar el módulo) ──
+
 function migrateLegacyTechnicalState() {
   const legacy = extractTechnicalStateFromExcel();
   for (const [waId, state] of Object.entries(legacy)) {
     upsertStateInExcel(waId, state);
   }
-
   const removed = removeTechnicalColumns();
   if (Object.keys(legacy).length || removed.length) {
     console.log(`🧹 Migración de estado técnico completada | convs: ${Object.keys(legacy).length} | columnas eliminadas: ${removed.join(', ') || 'ninguna'}`);
@@ -61,6 +66,31 @@ migrateLegacyTechnicalState();
 // Si el Excel de negocio aún contiene __bot_state (instalación anterior),
 // lo migra al archivo independiente bot_state.xlsx y lo elimina del Excel.
 migrateStateSheetToFile();
+
+// ── Migración asíncrona bot_state.xlsx → DynamoDB ────────────────────────────
+// Llamar desde index.js con `await conversationManager.init()` antes de arrancar
+// el servidor. Solo hace algo si bot_state.xlsx existe (primera vez con DynamoDB).
+
+async function init() {
+  const stateFilePath = process.env.CONV_STATE_FILE ||
+    path.join(path.dirname(process.env.EXCEL_PATH || path.join(__dirname, '..', '..', 'data', 'allianz_latest.xlsx')), 'bot_state.xlsx');
+
+  if (!fs.existsSync(stateFilePath)) return;
+
+  const states = readAllStatesFromExcel();
+  if (!states.length) return;
+
+  console.log(`🔀 Migrando ${states.length} estado(s) de bot_state.xlsx → DynamoDB...`);
+  for (const state of states) {
+    if (!state.waId) continue;
+    await dynamoStateStore.upsertState(state.waId, state);
+  }
+
+  fs.renameSync(stateFilePath, `${stateFilePath}.migrated`);
+  console.log(`✅ Migración bot_state.xlsx → DynamoDB completada (archivo renombrado a .migrated)`);
+}
+
+// ── Helpers internos ──────────────────────────────────────────────────────────
 
 function mergeConversation(baseExcel, state) {
   if (!baseExcel) return null;
@@ -83,15 +113,17 @@ function mergeConversation(baseExcel, state) {
   };
 }
 
-function getConversation(waId) {
+// ── API pública (todas las funciones son async) ───────────────────────────────
+
+async function getConversation(waId) {
   const key = normalizeWaId(waId) || String(waId);
   const baseExcel = readConversationByWaId(key);
   if (!baseExcel) return null;
-  return mergeConversation(baseExcel, readStateByWaId(key));
+  return mergeConversation(baseExcel, await dynamoStateStore.readStateByWaId(key));
 }
 
-function getAllConversations() {
-  const states = readAllStatesFromExcel();
+async function getAllConversations() {
+  const states = await dynamoStateStore.readAllStates();
   const out = [];
   for (const state of states) {
     const key = normalizeWaId(state.waId) || String(state.waId || '');
@@ -103,23 +135,23 @@ function getAllConversations() {
   return out;
 }
 
-function createOrUpdateConversation(waId, data = {}) {
+async function createOrUpdateConversation(waId, data = {}) {
   const key = normalizeWaId(waId) || String(waId);
-  const techPatch = {};
+  const techPatch  = {};
   const excelPatch = {};
 
   for (const [k, v] of Object.entries(data || {})) {
-    if (TECH_FIELDS.has(k)) techPatch[k] = v;
+    if (TECH_FIELDS.has(k))  techPatch[k]  = v;
     if (EXCEL_FIELDS.has(k)) excelPatch[k] = v;
   }
 
-  // Una sola apertura del Excel → aplica ambos patches → un solo guardado con lock.
-  applyPatches(key, techPatch, excelPatch);
+  if (Object.keys(techPatch).length)  await dynamoStateStore.upsertState(key, techPatch);
+  if (Object.keys(excelPatch).length) updateConversationExcel(key, excelPatch);
 
   return getConversation(key);
 }
 
-function recordUserMessage(waId) {
+async function recordUserMessage(waId) {
   return createOrUpdateConversation(waId, {
     lastMessageAt:      Date.now(),
     lastUserMessageAt:  Date.now(),
@@ -128,30 +160,31 @@ function recordUserMessage(waId) {
   });
 }
 
-function getMensajes(waId) {
-  const conv = getConversation(waId);
+async function getMensajes(waId) {
+  const conv = await getConversation(waId);
   return conv?.mensajes || [];
 }
 
-function saveMensajes(waId, mensajes) {
+async function saveMensajes(waId, mensajes) {
   return createOrUpdateConversation(waId, { mensajes });
 }
 
-function recordResponse(waId) {
+async function recordResponse(waId) {
   return createOrUpdateConversation(waId, { lastMessageAt: Date.now() });
 }
 
-function markAsEscalated(waId) {
+async function markAsEscalated(waId) {
   return createOrUpdateConversation(waId, { stage: 'escalated' });
 }
 
-function getNexpByWaId(waId) {
-  const conv = getConversation(waId);
+async function getNexpByWaId(waId) {
+  const conv = await getConversation(waId);
   return conv?.nexp || null;
 }
 
 module.exports = {
   normalizeWaId,
+  init,
   getConversation,
   getAllConversations,
   createOrUpdateConversation,

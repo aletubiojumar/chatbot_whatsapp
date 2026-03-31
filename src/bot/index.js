@@ -9,6 +9,7 @@ const { isDuplicate } = require('./dedup');
 const { checkLimit } = require('./rateLimiter');
 const { markAsRead } = require('./sendMessage');
 const log = require('../utils/logger');
+const conversationManager = require('./conversationManager');
 const { startScheduler } = require('./reminderScheduler');
 const { cleanOldLogs } = require('../utils/fileLogger');
 const resourceMonitor = require('../utils/resourceMonitor');
@@ -180,22 +181,27 @@ app.post('/webhook', async (req, res) => {
 
 // ── Arranque ──────────────────────────────────────────────────────────────
 
-const server = app.listen(PORT, HOST, () => {
-  console.log('\n╔════════════════════════════════════════════════════════════╗');
-  console.log('║     🤖 WhatsApp Bot Jumar — MODO WHATSAPP IA              ║');
-  console.log('╚════════════════════════════════════════════════════════════╝\n');
-  console.log(`✅ Bot escuchando en ${HOST}:${PORT}`);
-  console.log(`🌐 Health: http://${HOST}:${PORT}/health`);
-  console.log(`📱 Phone Number ID: ${process.env.PHONE_NUMBER_ID}`);
-  console.log(`🔑 Token configurado: ${Boolean(process.env.USER_ACCESS_TOKEN)}\n`);
-  startScheduler();
-  resourceMonitor.startMonitoring();
-  // Limpieza de logs al arrancar y después cada semana
-  cleanOldLogs();
-  setInterval(cleanOldLogs, 7 * 24 * 60 * 60 * 1000).unref();
-});
+(async () => {
+  // Migrar bot_state.xlsx → DynamoDB si existe (primera vez con DynamoDB configurado)
+  await conversationManager.init();
 
-server.on('error', (err) => log.error('❌ Error del servidor HTTP:', err.message));
+  const server = app.listen(PORT, HOST, () => {
+    console.log('\n╔════════════════════════════════════════════════════════════╗');
+    console.log('║     🤖 WhatsApp Bot Jumar — MODO WHATSAPP IA              ║');
+    console.log('╚════════════════════════════════════════════════════════════╝\n');
+    console.log(`✅ Bot escuchando en ${HOST}:${PORT}`);
+    console.log(`🌐 Health: http://${HOST}:${PORT}/health`);
+    console.log(`📱 Phone Number ID: ${process.env.PHONE_NUMBER_ID}`);
+    console.log(`🔑 Token configurado: ${Boolean(process.env.USER_ACCESS_TOKEN)}\n`);
+    startScheduler();
+    resourceMonitor.startMonitoring();
+    // Limpieza de logs al arrancar y después cada semana
+    cleanOldLogs();
+    setInterval(cleanOldLogs, 7 * 24 * 60 * 60 * 1000).unref();
+  });
+
+  server.on('error', (err) => log.error('❌ Error del servidor HTTP:', err.message));
+})();
 
 function shutdown(signal) {
   console.log(`\n🛑 Señal ${signal} recibida. Cerrando servidor...`);

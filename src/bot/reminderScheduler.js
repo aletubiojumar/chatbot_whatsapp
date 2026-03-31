@@ -78,7 +78,7 @@ async function runChecks() {
   const now           = Date.now();
   const enHorario     = isBusinessHours();
   const TERMINAL      = new Set(['cerrado', 'finalizado', 'escalated']);
-  const conversaciones = conversationManager.getAllConversations()
+  const conversaciones = (await conversationManager.getAllConversations())
     .filter(c => c.status === 'pending' || c.status === 'awaiting_location');
 
   for (const conv of conversaciones) {
@@ -89,7 +89,7 @@ async function runChecks() {
     if (conv.status === 'awaiting_location') {
       if (conv.coordenadas) {
         // La ubicación ya llegó por otro canal (coords guardadas), solo limpiar el flag
-        conversationManager.createOrUpdateConversation(waId, { status: 'pending', locationStandbyUntil: 0 });
+        await conversationManager.createOrUpdateConversation(waId, { status: 'pending', locationStandbyUntil: 0 });
         console.log(`📍 Standby ubicación resuelto (coordenadas ya recibidas): nexp=${nexp}`);
       } else if (!conv.locationStandbyUntil || conv.locationStandbyUntil <= now) {
         await handleLocationStandbyExpired(conv);
@@ -106,7 +106,7 @@ async function runChecks() {
     if (!enHorario) {
       // El timer ya venció pero estamos fuera de horario: posponer al inicio
       // del próximo período laboral para no acumular "deuda" de tiempo.
-      conversationManager.createOrUpdateConversation(waId, {
+      await conversationManager.createOrUpdateConversation(waId, {
         nextReminderAt: nextBusinessHoursStart(),
       });
       continue;
@@ -127,7 +127,7 @@ async function runChecks() {
 
 async function finalizarSinMensaje(waId, nexp) {
   try {
-    conversationManager.createOrUpdateConversation(waId, {
+    await conversationManager.createOrUpdateConversation(waId, {
       stage:    'cerrado',
       contacto: 'No',
     });
@@ -155,7 +155,7 @@ async function handleInactivity(conv, now) {
   try {
     // Generar mensaje de inactividad con la IA
     const userData = conv.userData || {};
-    const mensajesPrevios = conversationManager.getMensajes(waId);
+    const mensajesPrevios = await conversationManager.getMensajes(waId);
     const historial = mensajesPrevios.map(m => ({
       role:  m.direction === 'in' ? 'user' : 'model',
       parts: [{ text: m.text }],
@@ -178,12 +178,12 @@ async function handleInactivity(conv, now) {
     await adapter.sendText(waId, msgInactividad);
 
     // Guardar el mensaje en el historial
-    conversationManager.saveMensajes(waId, [
+    await conversationManager.saveMensajes(waId, [
       ...mensajesPrevios,
       { direction: 'out', text: msgInactividad, timestamp: new Date().toISOString() },
     ]);
 
-    conversationManager.createOrUpdateConversation(waId, {
+    await conversationManager.createOrUpdateConversation(waId, {
       inactivityAttempts: siguiente,
       lastReminderAt:     now,
       nextReminderAt:     now + INACTIVITY_MS,
@@ -201,7 +201,7 @@ async function handleInactivity(conv, now) {
 async function handleLocationStandbyExpired(conv) {
   const { waId, nexp } = conv;
   try {
-    const mensajes    = conversationManager.getMensajes(waId);
+    const mensajes    = await conversationManager.getMensajes(waId);
     const userData    = conv?.userData || {};
     const isClosed    = ['cerrado', 'finalizado', 'escalated'].includes(conv.stage);
 
@@ -232,7 +232,7 @@ async function handleLocationStandbyExpired(conv) {
         ...mensajes,
         ...(msgCierre ? [{ direction: 'out', text: msgCierre, timestamp: new Date().toISOString() }] : []),
       ];
-      conversationManager.createOrUpdateConversation(waId, {
+      await conversationManager.createOrUpdateConversation(waId, {
         stage:               'cerrado',
         status:              'pending',
         contacto:            'Sí',
@@ -253,7 +253,7 @@ async function handleLocationStandbyExpired(conv) {
       });
     } else {
       // Conversación ya cerrada: solo limpiar el flag de standby
-      conversationManager.createOrUpdateConversation(waId, { status: 'pending', locationStandbyUntil: 0 });
+      await conversationManager.createOrUpdateConversation(waId, { status: 'pending', locationStandbyUntil: 0 });
     }
 
     triggerEncargoSync(nexp, 'ubicacion_pendiente_expirada', '[IA] Ubicación pendiente (Sin coordenadas)', false, true);
@@ -267,8 +267,8 @@ async function handleLocationStandbyExpired(conv) {
 
 async function finalizar(waId, nexp, anotacion = '') {
   try {
-    const conv = conversationManager.getConversation(waId);
-    let mensajes = conversationManager.getMensajes(waId);
+    const conv = await conversationManager.getConversation(waId);
+    let mensajes = await conversationManager.getMensajes(waId);
     const userData = conv?.userData || {};
 
     // Si el historial está vacío, reconstruir el mensaje inicial de la plantilla para
@@ -304,7 +304,7 @@ async function finalizar(waId, nexp, anotacion = '') {
       ...mensajes,
       { direction: 'out', text: msgCierre, timestamp: new Date().toISOString() },
     ];
-    conversationManager.createOrUpdateConversation(waId, {
+    await conversationManager.createOrUpdateConversation(waId, {
       stage:    'cerrado',
       contacto: 'No',
       mensajes: mensajesConCierre,

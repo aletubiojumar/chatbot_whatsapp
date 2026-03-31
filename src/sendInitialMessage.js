@@ -196,7 +196,7 @@ async function sendInitialMessages(opts = {}) {
       (process.env.INITIAL_RETRY_INTERVAL_HOURS || 6) * 60
     ) * 60000;
     if (!dryRun) {
-      conversationManager.createOrUpdateConversation(waId, {
+      await conversationManager.createOrUpdateConversation(waId, {
         stage:              'consent',
         attempts:           0,
         inactivityAttempts: 0,
