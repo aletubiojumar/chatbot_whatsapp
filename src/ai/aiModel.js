@@ -305,6 +305,7 @@ function buildPromptFinal(valoresExcel) {
    - Si aparece "[SISTEMA: FORZAR_PEDIR_UBICACION]", tu siguiente mensaje debe ser EXCLUSIVAMENTE la petición de ubicación del riesgo que corresponda según el tipo de intervención activo. No cierres ni resumas todavía.
    - Si aparece "[SISTEMA: REINTENTO_MENSAJE_VACIO]", rehace la respuesta pendiente de forma breve, natural y no vacía, manteniendo el flujo actual.
    - Si aparece "[SISTEMA: NO_REPETIR_IDENTIDAD]", el usuario ya confirmó la identidad. No repitas esa pregunta y pasa al siguiente dato pendiente.
+   - Si aparece "[SISTEMA: CONTINUAR_FLUJO_SIN_CERRAR" (con o sin datos extra como "stage=..."), tu respuesta anterior intentó cerrar o derivar antes de tiempo. Está prohibido cerrar, resumir o escalar ahora. Continúa con la siguiente pregunta pendiente y devuelve un estado no terminal coherente.
    - Si aparece "[SISTEMA: UBICACION_STANDBY_EXPIRADA]", la espera de ubicación ha vencido. Cierra de forma breve indicando que el perito continuará la gestión por otro medio y usa estado_expediente="escalado_humano".
 22. CAMPO "tipo_respuesta": rellénalo SIEMPRE.
    - "pregunta_identidad": cuando tu mensaje principal sea confirmar si hablas con el asegurado o pedir la relación del interlocutor.

@@ -2,7 +2,7 @@
 const conversationManager = require('./conversationManager');
 const { procesarConIA, translateMessagesToSpanish } = require('../ai/aiModel');
 const adapter             = require('../channels/whatsappAdapter');
-const { canProcess }      = require('./stateMachine');
+const { canProcess, isValidTransition } = require('./stateMachine');
 const { triggerEncargoSync } = require('./peritolineAutoSync');
 const { generateConversationPdf } = require('../utils/pdfGenerator');
 const { buildInitialTemplateText } = require('./templateSender');
@@ -27,6 +27,9 @@ const PERITO_EMAIL_MAP = (() => {
 
 // Mapeo entre los valores que devuelve la IA y los stages internos
 const ESTADO_IA_TO_STAGE = {
+  identificacion: 'identification',
+  valoracion:     'valoracion',
+  agendando:      'agendando',
   finalizado:      'finalizado',
   escalado_humano: 'escalated',
 };
@@ -66,6 +69,85 @@ function isPeritoAttendeeMentionInUser(text) {
 function isAffirmativeAck(text) {
   const t = String(text || '').trim().toLowerCase();
   return /^(si|sí|ok|vale|perfecto|correcto|todo ok|todo correcto|de acuerdo|confirmado)$/.test(t);
+}
+
+function isNegativeAck(text) {
+  const t = norm(text).trim();
+  return /^(no|negativo|prefiero no|rechazo)$/.test(t);
+}
+
+function isExplicitHumanEscalationIntent(text) {
+  const t = norm(text);
+  return (
+    t.includes('hablar con una persona') ||
+    t.includes('hablar con alguien') ||
+    t.includes('hablar con un agente') ||
+    t.includes('hablar con un humano') ||
+    t.includes('que me llamen') ||
+    t.includes('que me llame') ||
+    t.includes('me llamen') ||
+    t.includes('me llame') ||
+    t.includes('llamada') ||
+    t.includes('por telefono') ||
+    t.includes('por tlf')
+  );
+}
+
+function canApplyStageTransition(currentStage, nextStage) {
+  const from = String(currentStage || 'consent').trim() || 'consent';
+  const to = String(nextStage || '').trim();
+  if (!to) return false;
+  return from === to || isValidTransition(from, to);
+}
+
+function getNonTerminalAiStateForStage(stage) {
+  switch (stage) {
+    case 'valoracion':
+      return 'valoracion';
+    case 'agendando':
+      return 'agendando';
+    case 'consent':
+    case 'identification':
+    default:
+      return 'identificacion';
+  }
+}
+
+function normalizeSchedulePreference(value) {
+  const t = norm(value).trim();
+  if (!t) return '';
+  if (t === 'mañana' || t === 'manana') return 'Mañana';
+  if (t === 'tarde') return 'Tarde';
+  return '';
+}
+
+function shouldAssumeDigitalAcceptance({ extractedDigital, existingDigital, preferredSchedule }) {
+  if (typeof extractedDigital === 'boolean') return extractedDigital;
+  if (String(existingDigital || '').trim().toLowerCase() === 'no') return false;
+  return Boolean(normalizeSchedulePreference(preferredSchedule));
+}
+
+function shouldBlockEarlyTerminalStage({ currentStage, nextStage, userText, hasOutgoingMessage }) {
+  const stage = String(currentStage || 'consent').trim() || 'consent';
+  if (!hasOutgoingMessage) return false;
+
+  const isEarlyStage = stage === 'consent' || stage === 'identification';
+  if (!isEarlyStage) return false;
+
+  if (nextStage === 'finalizado') return true;
+
+  if (nextStage === 'escalated') {
+    if (stage === 'consent' && isNegativeAck(userText)) return false;
+    if (isExplicitHumanEscalationIntent(userText)) return false;
+    return true;
+  }
+
+  return false;
+}
+
+function buildBlockedTerminalRetryContext(currentStage) {
+  const aiState = getNonTerminalAiStateForStage(currentStage);
+  return `[SISTEMA: CONTINUAR_FLUJO_SIN_CERRAR stage=${aiState}]`;
 }
 
 function hasSharedLocation(conversation, currentLocationCoords) {
@@ -346,6 +428,7 @@ async function processMessage(waId, messageObj) {
 
     // Detectar primera respuesta ANTES de registrar actividad
     const isFirstResponse = !conversation.lastUserMessageAt;
+    const currentStage = String(conversation.stage || 'consent').trim() || 'consent';
 
     // Registrar actividad (resetea inactivityAttempts y nextReminderAt)
     await conversationManager.recordUserMessage(waId);
@@ -528,7 +611,38 @@ async function processMessage(waId, messageObj) {
 
     const locationAlreadyShared = hasSharedLocation(conversation, locationCoords);
     let responseType = String(respuestaIA.datos_extraidos?.tipo_respuesta || 'normal').trim() || 'normal';
-    const aiWantsToSummarizeOrClose =
+    let hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
+    let nextStage = ESTADO_IA_TO_STAGE[respuestaIA.datos_extraidos?.estado_expediente];
+
+    const shouldRetryBlockedTerminal =
+      Boolean(nextStage) &&
+      (shouldBlockEarlyTerminalStage({
+        currentStage,
+        nextStage,
+        userText: text,
+        hasOutgoingMessage,
+      }) ||
+      ((nextStage === 'finalizado' || nextStage === 'escalated') &&
+        !canApplyStageTransition(currentStage, nextStage)));
+
+    if (shouldRetryBlockedTerminal) {
+      const retriedStageResponse = await requestAIResponse({
+        historial,
+        mensajeUsuario: text,
+        contextoSistema,
+        valoresExcel,
+        extraContext: buildBlockedTerminalRetryContext(currentStage),
+      });
+      if (retriedStageResponse.mensaje_para_usuario) {
+        respuestaIA = retriedStageResponse;
+        responseType = String(respuestaIA.datos_extraidos?.tipo_respuesta || 'normal').trim() || 'normal';
+        hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
+        nextStage = ESTADO_IA_TO_STAGE[respuestaIA.datos_extraidos?.estado_expediente];
+        L.warn(`⚠️  IA intentó cerrar/escalar prematuramente desde stage=${currentStage}; se fuerza continuación del flujo`);
+      }
+    }
+
+    let aiWantsToSummarizeOrClose =
       responseType === 'resumen_final' ||
       responseType === 'cierre_definitivo';
 
@@ -548,6 +662,11 @@ async function processMessage(waId, messageObj) {
       if (forcedLocationResponse.mensaje_para_usuario) {
         respuestaIA = forcedLocationResponse;
         responseType = String(respuestaIA.datos_extraidos?.tipo_respuesta || 'normal').trim() || 'normal';
+        hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
+        nextStage = ESTADO_IA_TO_STAGE[respuestaIA.datos_extraidos?.estado_expediente];
+        aiWantsToSummarizeOrClose =
+          responseType === 'resumen_final' ||
+          responseType === 'cierre_definitivo';
         L.warn('⚠️  IA intentó resumir/cerrar sin pedir ubicación GPS — se fuerza una nueva respuesta');
       }
     }
@@ -577,11 +696,11 @@ async function processMessage(waId, messageObj) {
       if (identityRetryResponse.mensaje_para_usuario && identityRetryResponse.mensaje_para_usuario !== lastOutMsg.text) {
         respuestaIA = identityRetryResponse;
         responseType = String(respuestaIA.datos_extraidos?.tipo_respuesta || 'normal').trim() || 'normal';
+        hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
+        nextStage = ESTADO_IA_TO_STAGE[respuestaIA.datos_extraidos?.estado_expediente];
         L.warn('⚠️  Bucle de identificación detectado tras "sí" del usuario — se solicita una nueva respuesta');
       }
     }
-
-    const hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
 
     // Persistir mensajes y datos extraídos en el Excel
     if (respuestaIA.mensaje_entendido) {
@@ -635,11 +754,17 @@ async function processMessage(waId, messageObj) {
       if (importe_estimado || estimateFromCurrent) {
         excelUpdates.danos = String(importe_estimado || estimateFromCurrent).trim();
       }
-      if (typeof acepta_videollamada === 'boolean') {
+      const preferredSchedule = normalizeSchedulePreference(preferencia_horaria);
+      if (preferredSchedule) excelUpdates.horario = preferredSchedule;
+      if (shouldAssumeDigitalAcceptance({
+        extractedDigital: acepta_videollamada,
+        existingDigital: conversation.digital,
+        preferredSchedule,
+      })) {
+        excelUpdates.digital = 'Sí';
+      } else if (typeof acepta_videollamada === 'boolean') {
         excelUpdates.digital = acepta_videollamada ? 'Sí' : 'No';
       }
-      if (preferencia_horaria === 'mañana') excelUpdates.horario = 'Mañana';
-      else if (preferencia_horaria === 'tarde') excelUpdates.horario = 'Tarde';
       if (locationCoords) excelUpdates.coordenadas = locationCoords;
       if (tipo_respuesta === 'peticion_ubicacion') {
         excelUpdates.locationRequestCount = locationRequestCount + 1;
@@ -664,7 +789,16 @@ async function processMessage(waId, messageObj) {
 
       const nuevoStage = ESTADO_IA_TO_STAGE[estado_expediente];
       if (nuevoStage) {
-        if (!hasOutgoingMessage && nuevoStage === 'escalated') {
+        if (!canApplyStageTransition(currentStage, nuevoStage)) {
+          L.warn(`⚠️  Transición de stage inválida ${currentStage} → ${nuevoStage}; se mantiene stage actual`);
+        } else if (shouldBlockEarlyTerminalStage({
+          currentStage,
+          nextStage: nuevoStage,
+          userText: text,
+          hasOutgoingMessage,
+        })) {
+          L.warn(`⚠️  Stage terminal prematuro ${currentStage} → ${nuevoStage}; se mantiene stage actual`);
+        } else if (!hasOutgoingMessage && nuevoStage === 'escalated') {
           stageAplicado = nuevoStage;
           excelUpdates.stage = nuevoStage;
           excelUpdates.contacto = 'Sí';
@@ -674,8 +808,10 @@ async function processMessage(waId, messageObj) {
         } else {
           stageAplicado = nuevoStage;
           excelUpdates.stage = nuevoStage;
-          excelUpdates.contacto = 'Sí'; // Conversación terminada con el asegurado
-          L.log(`🔄 Stage → ${nuevoStage}`);
+          if (nuevoStage === 'finalizado' || nuevoStage === 'escalated') {
+            excelUpdates.contacto = 'Sí'; // Conversación terminada con el asegurado
+          }
+          L.log(`🔄 Stage ${currentStage} → ${nuevoStage}`);
         }
       }
 
@@ -797,7 +933,14 @@ module.exports = {
     hasSharedLocation,
     normalizeContactPhone,
     isAffirmativeAck,
+    isNegativeAck,
+    isExplicitHumanEscalationIntent,
+    canApplyStageTransition,
+    getNonTerminalAiStateForStage,
     extractRelationship,
     analyzeAddressType,
+    normalizeSchedulePreference,
+    shouldAssumeDigitalAcceptance,
+    shouldBlockEarlyTerminalStage,
   },
 };
