@@ -72,7 +72,12 @@ function buildInitialTemplateText(userData = {}) {
   const aseguradora = String(userData.aseguradora ?? '').trim();
   const nexp        = String(userData.nexp        ?? '').trim();
   const causa       = String(userData.causa       ?? '').trim().slice(0, 60);
-  return `${saludo}, le contactamos desde el Gabinete Pericial Jumar en relación a su siniestro con ${aseguradora} (expediente nº ${nexp}). Causa: ${causa}.`;
+  return (
+    `${saludo}\n\n` +
+    `Le escribimos desde Jumar Ingeniería y Peritaciones S.L., gabinete pericial que colabora con su compañía aseguradora ${aseguradora}.\n\n` +
+    `El motivo del contacto es un siniestro comunicado a su seguro con número de expediente ${nexp}, relacionado con ${causa}.\n\n` +
+    `Para poder realizar las primeras gestiones, necesitamos confirmar si desea continuar la conversación por este medio.`
+  );
 }
 
 module.exports = { sendInitialTemplate, buildSaludoByHour, buildInitialTemplateText };

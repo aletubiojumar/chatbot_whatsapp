@@ -110,9 +110,11 @@ HOST=127.0.0.1
 
 # ── Almacenamiento ────────────────────────────────────────────────────────
 EXCEL_PATH=./data/allianz_latest.xlsx
-CONV_STATE_FILE=./data/bot_state.xlsx
 EXCEL_ESTADO_PENDIENTE=OK         # Valor de la columna Estado que activa el bot
-CONV_STATE_SHEET=__bot_state      # Hoja interna dentro de bot_state.xlsx
+
+# ── DynamoDB (estado técnico de conversaciones, multi-instancia) ─────────
+AWS_REGION=eu-south-2
+DYNAMODB_STATE_TABLE=bot_state    # Tabla con partition key "waId" (String), modo PAY_PER_REQUEST
 
 # ── Logging ───────────────────────────────────────────────────────────────
 LOG_LEVEL=info            # debug | info | warn | error
@@ -344,14 +346,16 @@ Al expirar `LOCATION_STANDBY_HOURS` (default: 96h) sin recibir la ubicación, el
 
 ## Almacenamiento de datos
 
-El estado del bot se divide en **dos archivos independientes** para que reemplazar el Excel de negocio nunca afecte las conversaciones activas:
+El estado del bot se divide en **dos capas independientes** para que reemplazar el Excel de negocio nunca afecte las conversaciones activas:
 
-| Archivo | Propósito | Quién lo gestiona |
+| Capa | Propósito | Quién lo gestiona |
 |---|---|---|
 | `data/allianz_latest.xlsx` | Datos de negocio — expedientes, teléfonos, resultados | Equipo Jumar (se puede reemplazar libremente) |
-| `data/bot_state.xlsx` | Estado técnico de conversaciones activas | Solo el bot (no tocar manualmente) |
+| DynamoDB (`DYNAMODB_STATE_TABLE`) | Estado técnico de conversaciones activas (multi-instancia) | Solo el bot (no tocar manualmente) |
 
-> **Importante:** `data/bot_state.xlsx` se crea automáticamente al primer mensaje. Al arrancar, si el Excel de negocio contiene una hoja `__bot_state` (instalación anterior), se migra automáticamente a `bot_state.xlsx` y se elimina del Excel de negocio.
+> **DynamoDB** es la fuente de verdad para el estado técnico. Permite desplegar varias instancias del bot sin conflictos de estado. La tabla requiere la partition key `waId` (String) y modo de facturación PAY_PER_REQUEST. Configura `DYNAMODB_STATE_TABLE` y `AWS_REGION` en `.env`.
+
+> **Migración desde bot_state.xlsx:** al arrancar, si existe `data/bot_state.xlsx` o una hoja `__bot_state` en el Excel de negocio, el estado se migra automáticamente a DynamoDB.
 
 ### `data/allianz_latest.xlsx` — Datos de negocio (hoja principal)
 
@@ -374,13 +378,13 @@ Gestionada por el equipo de Jumar. El bot lee estos campos y escribe el resultad
 | `Horario` | **Escritura** | Preferencia horaria (`Mañana` / `Tarde`) |
 | `Coordenadas` | **Escritura** | Coordenadas GPS del riesgo (`lat, lon`) si el asegurado las comparte |
 
-### `data/bot_state.xlsx` — Estado técnico (hoja `__bot_state`)
+### DynamoDB — Estado técnico por conversación
 
-Gestionada exclusivamente por el bot. Persiste el estado entre reinicios. **No sustituir ni editar este archivo manualmente** salvo para recuperación de emergencia:
+Gestionada exclusivamente por el bot. **No modificar directamente.** Para resetear una conversación usar el script `scripts/reset_conversation.js`.
 
 | Campo | Descripción |
 |---|---|
-| `waId` | Número de WhatsApp (sin +) |
+| `waId` | Número de WhatsApp (sin +) — partition key |
 | `status` | `pending` / `escalated` / `awaiting_location` |
 | `stage` | Stage actual de la conversación |
 | `lastBotResponseType` | Tipo de la última salida de la IA (`normal`, `peticion_ubicacion`, etc.) |
@@ -472,6 +476,17 @@ El script escribe en el campo **Anotación Encargo 01** (máx. 128 caracteres) d
 npm run peritoline:sync -- --encargo 880337292
 npm run peritoline:sync -- --encargo 880337292 --anotacion "[IA] Digital: Sí"
 ```
+
+### Reset de conversación
+
+Para borrar el estado de una conversación y volver a ejecutar el flujo desde cero (útil en pruebas):
+
+```bash
+node scripts/reset_conversation.js --nexp 659627194
+node scripts/reset_conversation.js --waId 34674742564
+```
+
+El script limpia en DynamoDB: `stage=consent`, `status=pending`, `mensajes=[]` y todos los campos extraídos (contacto, attPerito, danos, digital, horario, coordenadas). A continuación, enviar el template inicial con `npm run send -- --nexp XXXXXX`.
 
 ---
 
@@ -585,6 +600,7 @@ chatbot_ia/
 │       └── conversation_[nexp].pdf  # Transcripciones generadas automáticamente
 ├── scripts/
 │   ├── peritoline_sync.js           # Script de sincronización con PeritoLine (Playwright)
+│   ├── reset_conversation.js        # Reset de conversación por nexp o waId (testing)
 │   └── ngrok_webhook.sh             # Helper para desarrollo con ngrok
 ├── logs/
 │   ├── [nexp]/
@@ -644,10 +660,11 @@ log.debug('payload completo:', body);  // solo visible con LOG_LEVEL=debug
 
 ### Guardarraíles del handler (`src/bot/messageHandler.js`)
 
-- Registra en log el JSON real de `datos_extraidos` devuelto por la IA para poder diagnosticar diferencias entre entornos y modelos
 - Bloquea cierres terminales tempranos en `consent` e `identification`
 - Permite escalado temprano solo si el usuario rechaza continuar o pide explícitamente atención humana/llamada
-- Mantiene la conversación abierta si la IA intenta cerrar sin esas condiciones
+- **Guard de cierre prematuro (3 intentos):** si la IA genera un mensaje de cierre en una etapa no terminal, el backend reintenta con marcadores `[SISTEMA: CONTINUAR_FLUJO_SIN_CERRAR]` + `[SISTEMA: TAREA_OBLIGATORIA task=X]` para indicarle exactamente qué pregunta debe hacer
+- **Fallback hardcoded:** si tras 3 reintentos la IA persiste en cerrar, el backend sustituye su respuesta por una pregunta predefinida para la tarea pendiente (`confirmar_at_perito`, `pedir_estimacion`, `evaluar_digital`, `pedir_preferencia_horaria` o `pedir_ubicacion`)
+- El extractedAttendeeName de la respuesta IA se propaga al detector de tareas pendientes para evitar pedir de nuevo quien atiende al perito cuando la IA ya lo extrajo
 
 ### Fallback de modelos IA (`src/ai/aiModel.js`)
 

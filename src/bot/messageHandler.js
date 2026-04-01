@@ -183,9 +183,12 @@ function isAllowedTerminalTurn({ currentStage, nextStage, userText, lastBotRespo
   return false;
 }
 
-function hasMeaningfulAttendee(conversation, { lastBotMessage = '', userText = '' } = {}) {
+function hasMeaningfulAttendee(conversation, { lastBotMessage = '', userText = '', extractedAttendeeName = '' } = {}) {
   const stored = String(conversation?.attPerito || '').trim();
   if (stored && !stored.startsWith('sin indicar')) return true;
+
+  // Si la IA ya extrajo un nombre de contacto en esta respuesta, el AT. perito es conocido
+  if (extractedAttendeeName && String(extractedAttendeeName).trim()) return true;
 
   return isPeritoAttendeePrompt(lastBotMessage) && isAffirmativeAck(userText);
 }
@@ -196,11 +199,12 @@ function detectNextRequiredTask({
   userText,
   estimateAlreadyKnown,
   extractedDigital,
+  extractedAttendeeName,
   preferredSchedule,
   locationAlreadyShared,
   locationRequestCount,
 }) {
-  const attendeeKnown = hasMeaningfulAttendee(conversation, { lastBotMessage, userText });
+  const attendeeKnown = hasMeaningfulAttendee(conversation, { lastBotMessage, userText, extractedAttendeeName });
   if (!attendeeKnown) return 'confirmar_at_perito';
   if (!estimateAlreadyKnown) return 'pedir_estimacion';
 
@@ -708,6 +712,7 @@ async function processMessage(waId, messageObj) {
       userText: text,
       estimateAlreadyKnown,
       extractedDigital: respuestaIA.datos_extraidos?.acepta_videollamada,
+      extractedAttendeeName: respuestaIA.datos_extraidos?.nombre_contacto,
       preferredSchedule,
       locationAlreadyShared,
       locationRequestCount,
@@ -740,7 +745,7 @@ async function processMessage(waId, messageObj) {
 
       const extraContext = shouldRetryBlockedTerminal
         ? `${buildBlockedTerminalRetryContext(currentStage)}\n[SISTEMA: TAREA_OBLIGATORIA task=${nextRequiredTask}]`
-        : buildBlockedClosureRetryContext(currentStage, nextRequiredTask);
+        : `${buildBlockedClosureRetryContext(currentStage, nextRequiredTask)}\n[SISTEMA: TAREA_OBLIGATORIA task=${nextRequiredTask}]`;
 
       const guardedResponse = await requestAIResponse({
         historial,
@@ -764,6 +769,7 @@ async function processMessage(waId, messageObj) {
         userText: text,
         estimateAlreadyKnown,
         extractedDigital: respuestaIA.datos_extraidos?.acepta_videollamada,
+        extractedAttendeeName: respuestaIA.datos_extraidos?.nombre_contacto,
         preferredSchedule,
         locationAlreadyShared,
         locationRequestCount,
@@ -774,6 +780,30 @@ async function processMessage(waId, messageObj) {
       } else {
         L.warn(`⚠️  IA intentó cerrar con texto equivalente a cierre desde stage=${currentStage}; intento ${guardAttempt + 1}/3 forzando tarea=${nextRequiredTask}`);
       }
+    }
+
+    // Si el guard agotó los 3 intentos y la IA sigue con cierre prematuro, usar fallback hardcoded
+    const TASK_FALLBACK_MESSAGES = {
+      confirmar_at_perito: '¿Será usted quien atienda al perito en la visita, o será otra persona?',
+      pedir_estimacion:    '¿Podría indicarnos una estimación aproximada del importe de los daños?',
+      evaluar_digital:     '¿Le vendría bien realizar la peritación por videollamada, o prefiere que el perito acuda en persona?',
+      pedir_preferencia_horaria: '¿Prefiere que la visita del perito sea por la mañana o por la tarde?',
+      pedir_ubicacion:     'Para poder asignar correctamente al perito, ¿podría compartir la ubicación del inmueble?',
+    };
+    if (
+      looksLikeClosureMessage(respuestaIA.mensaje_para_usuario) &&
+      !isAllowedTerminalTurn({ currentStage, nextStage, userText: text, lastBotResponseType, responseType }) &&
+      TASK_FALLBACK_MESSAGES[nextRequiredTask]
+    ) {
+      L.warn(`⚠️  Guard agotado: IA persistió en cierre tras 3 intentos. Usando fallback hardcoded para tarea=${nextRequiredTask}`);
+      respuestaIA = {
+        mensaje_para_usuario: TASK_FALLBACK_MESSAGES[nextRequiredTask],
+        mensaje_entendido: true,
+        datos_extraidos: { estado_expediente: getNonTerminalAiStateForStage(currentStage), tipo_respuesta: 'normal' },
+      };
+      responseType = 'normal';
+      hasOutgoingMessage = true;
+      nextStage = undefined;
     }
 
     let aiWantsToSummarizeOrClose =
