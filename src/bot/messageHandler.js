@@ -170,7 +170,10 @@ function isAllowedTerminalTurn({ currentStage, nextStage, userText, lastBotRespo
   if (responseType !== 'cierre_definitivo') return false;
 
   if (nextStage === 'finalizado') {
-    return lastBotResponseType === 'resumen_final' && isAffirmativeAck(userText);
+    // La transición a finalizado solo es legítima si el stage actual lo permite Y el resumen fue enviado
+    return canApplyStageTransition(currentStage, 'finalizado') &&
+      lastBotResponseType === 'resumen_final' &&
+      isAffirmativeAck(userText);
   }
 
   if (nextStage === 'escalated') {
@@ -790,12 +793,21 @@ async function processMessage(waId, messageObj) {
       pedir_preferencia_horaria: '¿Prefiere que la visita del perito sea por la mañana o por la tarde?',
       pedir_ubicacion:     'Para poder asignar correctamente al perito, ¿podría compartir la ubicación del inmueble?',
     };
-    if (
+    // Transición de stage todavía inválida tras 3 reintentos (ej: identification→finalizado)
+    const guardExhaustedInvalidTransition =
+      Boolean(nextStage) &&
+      (shouldBlockEarlyTerminalStage({ currentStage, nextStage, userText: text, hasOutgoingMessage }) ||
+       ((nextStage === 'finalizado' || nextStage === 'escalated') &&
+         !canApplyStageTransition(currentStage, nextStage)));
+    // Mensaje de cierre no permitido según texto (puede fallar si isAllowedTerminalTurn usa lastBotResponseType incorrecto)
+    const guardExhaustedUnallowedClosure =
       looksLikeClosureMessage(respuestaIA.mensaje_para_usuario) &&
-      !isAllowedTerminalTurn({ currentStage, nextStage, userText: text, lastBotResponseType, responseType }) &&
+      !isAllowedTerminalTurn({ currentStage, nextStage, userText: text, lastBotResponseType, responseType });
+    if (
+      (guardExhaustedInvalidTransition || guardExhaustedUnallowedClosure) &&
       TASK_FALLBACK_MESSAGES[nextRequiredTask]
     ) {
-      L.warn(`⚠️  Guard agotado: IA persistió en cierre tras 3 intentos. Usando fallback hardcoded para tarea=${nextRequiredTask}`);
+      L.warn(`⚠️  Guard agotado: IA persistió en cierre (invalidTransition=${guardExhaustedInvalidTransition}) tras 3 intentos. Fallback hardcoded para tarea=${nextRequiredTask}`);
       respuestaIA = {
         mensaje_para_usuario: TASK_FALLBACK_MESSAGES[nextRequiredTask],
         mensaje_entendido: true,
