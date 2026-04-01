@@ -320,6 +320,10 @@ function buildPromptFinal(valoresExcel) {
    - "resumen_final": cuando envíes el resumen previo a la confirmación final de datos.
    - "cierre_definitivo": solo cuando envíes el cierre definitivo o la única respuesta permitida tras un expediente ya cerrado.
    - "normal": para cualquier otro mensaje.
+23. PROHIBICIÓN ABSOLUTA DE CIERRE ANTICIPADO: Queda TERMINANTEMENTE PROHIBIDO enviar mensajes equivalentes a "Su caso está siendo atendido por nuestro equipo. Le contactaremos en breve." o cualquier variante que indique que la conversación ha terminado, que un humano se encargará o que el perito contactará al asegurado, SALVO en estos dos casos únicos:
+   a) Cuando el contexto contenga el marcador [SISTEMA: TERMINAL_ESCALADO] o [SISTEMA: TERMINAL_FINALIZADO].
+   b) En el mensaje de cierre definitivo (tipo_respuesta="cierre_definitivo") emitido DESPUÉS de que el asegurado haya respondido afirmativamente al RESUMEN FINAL OBLIGATORIO (tipo_respuesta="resumen_final").
+   En CUALQUIER OTRO MOMENTO del flujo (identificación, valoración, agendando, confirmación de datos parciales), debes continuar con la siguiente pregunta pendiente. Nunca anticipes el cierre.
 `;
 
   const reglasReplaced = reglasControl
