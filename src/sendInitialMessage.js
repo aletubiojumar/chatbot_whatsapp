@@ -8,7 +8,7 @@ const XLSX = require('xlsx');
 const { sendInitialTemplate, buildSaludoByHour, buildInitialTemplateText } = require('./bot/templateSender');
 const conversationManager = require('./bot/conversationManager');
 const { triggerEncargoSync } = require('./bot/peritolineAutoSync');
-const { readAllStatesFromExcel } = require('./utils/excelManager');
+const dynamoStateStore = require('./utils/dynamoStateStore');
 const { EXCEL_PATH } = require('./utils/pathConfig');
 const log = require('./utils/logger');
 
@@ -102,17 +102,18 @@ async function sendInitialMessages(opts = {}) {
 
   if (dryRun) console.log('⚠️  MODO DRY-RUN: no se enviarán mensajes reales\n');
 
-  // Cargar waIds con conversación ACTIVA (no terminal) para no resetear estados en curso.
+  // Cargar waIds con conversación ACTIVA (no terminal) desde DynamoDB para no resetear estados en curso.
   // Las conversaciones en estado terminal (escalated/finalizado/cerrado) SÍ pueden
   // reiniciarse si el Excel ha sido limpiado para un nuevo envío.
   const TERMINAL_STAGES_RESET = new Set(['escalated', 'finalizado', 'cerrado']);
+  const allDynamoStates = await dynamoStateStore.readAllStates();
   const existingWaIds = new Set(
-    readAllStatesFromExcel()
+    allDynamoStates
       .filter(s => !TERMINAL_STAGES_RESET.has(s.stage) && s.status !== 'escalated')
       .map(s => String(s.waId))
   );
   if (existingWaIds.size > 0) {
-    console.log(`🔒 Conversaciones activas en __bot_state: ${existingWaIds.size} (se omitirán)\n`);
+    console.log(`🔒 Conversaciones activas en DynamoDB: ${existingWaIds.size} (se omitirán)\n`);
   }
 
   let filas;
@@ -145,9 +146,9 @@ async function sendInitialMessages(opts = {}) {
       .slice(0, 60);
     const waId = telefono;
 
-    // Saltar filas cuyo waId ya tiene conversación activa en __bot_state
+    // Saltar filas cuyo waId ya tiene conversación activa en DynamoDB
     if (waId && existingWaIds.has(waId)) {
-      console.log(`🔒 Fila ${fila.rowIndex} omitida — conversación ya activa (__bot_state) | nexp=${nexp}`);
+      console.log(`🔒 Fila ${fila.rowIndex} omitida — conversación ya activa (DynamoDB stage=${allDynamoStates.find(s=>String(s.waId)===waId)?.stage}) | nexp=${nexp}`);
       resultados.omitidos++;
       continue;
     }
@@ -194,15 +195,27 @@ async function sendInitialMessages(opts = {}) {
     ) * 60000;
     if (!dryRun) {
       await conversationManager.createOrUpdateConversation(waId, {
-        stage:              'consent',
-        attempts:           0,
-        inactivityAttempts: 0,
-        mensajes:           [{ direction: 'out', text: buildInitialTemplateText({ aseguradora, nexp, causa: causaTemplate }), timestamp: new Date().toISOString() }],
-        contacto:           'En curso',
-        lastMessageAt:      Date.now(),
-        lastUserMessageAt:  null,   // resetear para que el scheduler detecte scenario A
-        lastReminderAt:     null,
-        nextReminderAt:     Date.now() + INITIAL_RETRY_MS,
+        stage:               'consent',
+        attempts:            0,
+        inactivityAttempts:  0,
+        mensajes:            [{ direction: 'out', text: buildInitialTemplateText({ aseguradora, nexp, causa: causaTemplate }), timestamp: new Date().toISOString() }],
+        contacto:            'En curso',
+        lastMessageAt:       Date.now(),
+        lastUserMessageAt:   null,   // resetear para que el scheduler detecte scenario A
+        lastReminderAt:      null,
+        nextReminderAt:      Date.now() + INITIAL_RETRY_MS,
+        // Limpiar datos extraídos de sesiones anteriores para evitar cierres prematuros
+        attPerito:           '',
+        danos:               '',
+        digital:             '',
+        coordenadas:         '',
+        horario:             '',
+        relacion:            '',
+        idioma:              '',
+        lastBotResponseType: '',
+        locationRequestCount: 0,
+        locationStandbyUntil: 0,
+        status:              'pending',
       });
     }
 

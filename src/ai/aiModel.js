@@ -324,11 +324,20 @@ function buildPromptFinal(valoresExcel) {
    a) Cuando el contexto contenga el marcador [SISTEMA: TERMINAL_ESCALADO] o [SISTEMA: TERMINAL_FINALIZADO].
    b) En el mensaje de cierre definitivo (tipo_respuesta="cierre_definitivo") emitido DESPUÉS de que el asegurado haya respondido afirmativamente al RESUMEN FINAL OBLIGATORIO (tipo_respuesta="resumen_final").
    En CUALQUIER OTRO MOMENTO del flujo (identificación, valoración, agendando, confirmación de datos parciales), debes continuar con la siguiente pregunta pendiente. Nunca anticipes el cierre.
+24. DIRECCIÓN DEL SINIESTRO: La dirección registrada en el expediente es "{{direccion}}", CP {{cp}}, {{municipio}}.
+   PROHIBIDO pedir la dirección desde cero. Al llegar al paso de verificación de dirección, muéstrasela al asegurado exactamente como está registrada y pregúntale únicamente si es correcta o si hay algún dato que corregir (por ejemplo: número de piso, letra, bloque). Si el asegurado la confirma sin cambios, acéptala tal cual y avanza. Si la corrige, usa la versión corregida.
+   Ejemplo de mensaje correcto: "La dirección registrada para este siniestro es {{direccion}}, {{municipio}}. ¿Es correcta?"
+25. CAUSA DEL SINIESTRO (CONFIRMACIÓN): La causa registrada en el expediente es "{{causa}}".
+   PROHIBIDO preguntar la causa desde cero. Cuando llegues al paso de valoración, muéstrasela al asegurado ("Según nuestros datos, el siniestro se debe a {{causa}}. ¿Es correcto?") y pide únicamente que la confirme o corrija. A continuación pregunta la estimación económica de los daños.
+   Si la causa ya está confirmada en el historial, no la vuelvas a mostrar ni a preguntar; ve directamente a la estimación.
 `;
 
   const reglasReplaced = reglasControl
     .replace(/{{causa}}/g, valoresExcel.causa || '')
-    .replace(/{{observaciones}}/g, valoresExcel.observaciones || '');
+    .replace(/{{observaciones}}/g, valoresExcel.observaciones || '')
+    .replace(/{{direccion}}/g, valoresExcel.direccion || '')
+    .replace(/{{cp}}/g, valoresExcel.cp || '')
+    .replace(/{{municipio}}/g, valoresExcel.municipio || '');
 
   return (
     instruccionesBase

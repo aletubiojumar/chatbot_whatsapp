@@ -577,6 +577,11 @@ async function processMessage(waId, messageObj) {
 
     contextoSistema += '\n[Videoperitación]: Si el usuario no expresa dudas, no expliques funcionamiento; pregunta disponibilidad directa (mañana/tarde).';
 
+    // Contexto especial para el primer mensaje de consentimiento
+    if (currentStage === 'consent' && isAffirmativeAck(text)) {
+      contextoSistema += '\n[CONSENTIMIENTO CONFIRMADO]: El asegurado acaba de aceptar continuar por WhatsApp. Procede DIRECTAMENTE con la pregunta de identidad ("¿Hablo con [nombre completo]?"). PROHIBIDO repetir la presentación inicial ni el número de expediente.';
+    }
+
     // Estado de espera de ubicación
     if (conversation.status === 'awaiting_location') {
       if (locationCoords) {
