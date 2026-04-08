@@ -34,6 +34,14 @@ const ESTADO_IA_TO_STAGE = {
   escalado_humano: 'escalated',
 };
 
+const TASK_FALLBACK_MESSAGES = {
+  confirmar_at_perito: '¿Será usted quien atienda al perito en la visita, o será otra persona?',
+  pedir_estimacion: '¿Podría indicarnos una estimación aproximada del importe de los daños?',
+  evaluar_digital: '¿Le vendría bien realizar la peritación por videollamada, o prefiere que el perito acuda en persona?',
+  pedir_preferencia_horaria: '¿Prefiere que la visita del perito sea por la mañana o por la tarde?',
+  pedir_ubicacion: 'Para poder asignar correctamente al perito, ¿podría compartir la ubicación del inmueble?',
+};
+
 // Cache de CP → localidad para no repetir peticiones
 const cpCache = {};
 const RELATION_RE = /\b(?:mi|su)\s+(herman[oa]|padre|madre|hij[oa]|espos[oa]|marido|mujer|pareja|prim[oa]|tio|tia|sobrin[oa]|abuel[oa]|niet[oa]|cunad[oa]|yerno|nuera|representante|abogado|emplead[oa]|operari[oa]|limpieza|inquilin[oa]|arrendatari[oa]|vecin[oa]|amig[oa])\b/i;
@@ -241,6 +249,87 @@ function buildBlockedClosureRetryContext(currentStage, task) {
   const aiState = getNonTerminalAiStateForStage(currentStage);
   const taskMarker = task ? ` task=${task}` : '';
   return `[SISTEMA: PROHIBIDO_CIERRE_SIN_RESUMEN stage=${aiState}${taskMarker}]`;
+}
+
+function getFallbackAiStateForTask(currentStage, task) {
+  if (task === 'resumen_final' && currentStage === 'identification') {
+    return 'valoracion';
+  }
+  return getNonTerminalAiStateForStage(currentStage);
+}
+
+function buildSummaryFallbackMessage({
+  conversation,
+  valoresExcel,
+  lastBotMessage = '',
+  userText = '',
+  estimateFromCurrent = '',
+  preferredSchedule = '',
+  locationAlreadyShared = false,
+  extractedDigital,
+  extractedAttendeeName = '',
+  extractedAttendeeRelation = '',
+}) {
+  const lines = [];
+  const address = [valoresExcel?.direccion, valoresExcel?.municipio].filter(Boolean).join(', ');
+  const cause = String(valoresExcel?.causa || '').trim();
+
+  if (address) lines.push(`Dirección del siniestro: ${address}.`);
+  if (cause) lines.push(`Causa del siniestro: ${cause}.`);
+
+  const storedAttendee = String(conversation?.attPerito || '').trim();
+  if (storedAttendee && !storedAttendee.startsWith('sin indicar')) {
+    const [name = '', relation = ''] = storedAttendee.split(' - ').map(v => String(v || '').trim());
+    if (name && relation && relation !== 'sin indicar') {
+      lines.push(`Persona que atenderá al perito: ${name} (${relation}).`);
+    } else if (name) {
+      lines.push(`Persona que atenderá al perito: ${name}.`);
+    }
+  } else if (String(extractedAttendeeName || '').trim()) {
+    const name = String(extractedAttendeeName).trim();
+    const relation = String(extractedAttendeeRelation || '').trim();
+    if (relation) {
+      lines.push(`Persona que atenderá al perito: ${name} (${relation}).`);
+    } else {
+      lines.push(`Persona que atenderá al perito: ${name}.`);
+    }
+  } else if (isPeritoAttendeePrompt(lastBotMessage) && isAffirmativeAck(userText)) {
+    const insuredName = String(valoresExcel?.nombre || '').trim();
+    if (insuredName) {
+      lines.push(`Persona que atenderá al perito: ${insuredName}.`);
+    } else {
+      lines.push('Persona que atenderá al perito: la misma persona que responde por WhatsApp.');
+    }
+  }
+
+  const estimate = String(estimateFromCurrent || conversation?.danos || '').trim();
+  if (estimate) lines.push(`Estimación aproximada de daños: ${estimate}.`);
+
+  const schedule = normalizeSchedulePreference(preferredSchedule || conversation?.horario || '');
+  const storedDigital = String(conversation?.digital || '').trim();
+  const effectiveDigital = typeof extractedDigital === 'boolean'
+    ? extractedDigital
+    : (storedDigital === 'Sí' ? true : storedDigital === 'No' ? false : null);
+
+  if (schedule) {
+    lines.push(`Modalidad prevista: videoperitación (${schedule.toLowerCase()}).`);
+  } else if (effectiveDigital === true) {
+    lines.push('Modalidad prevista: videoperitación.');
+  } else if (effectiveDigital === false) {
+    lines.push('Modalidad prevista: visita presencial.');
+  }
+
+  lines.push(
+    locationAlreadyShared
+      ? 'Ubicación del riesgo: facilitada.'
+      : 'Ubicación del riesgo: pendiente de envío.'
+  );
+
+  const summaryBody = lines.length
+    ? lines.map(line => `• ${line}`).join('\n')
+    : '• Datos del expediente confirmados.';
+
+  return `Perfecto. Antes de finalizar, le resumo los datos que tenemos:\n${summaryBody}\n\nSi todo es correcto, responda "sí".`;
 }
 
 function hasSharedLocation(conversation, currentLocationCoords) {
@@ -791,13 +880,6 @@ async function processMessage(waId, messageObj) {
     }
 
     // Si el guard agotó los 3 intentos y la IA sigue con cierre prematuro, usar fallback hardcoded
-    const TASK_FALLBACK_MESSAGES = {
-      confirmar_at_perito: '¿Será usted quien atienda al perito en la visita, o será otra persona?',
-      pedir_estimacion:    '¿Podría indicarnos una estimación aproximada del importe de los daños?',
-      evaluar_digital:     '¿Le vendría bien realizar la peritación por videollamada, o prefiere que el perito acuda en persona?',
-      pedir_preferencia_horaria: '¿Prefiere que la visita del perito sea por la mañana o por la tarde?',
-      pedir_ubicacion:     'Para poder asignar correctamente al perito, ¿podría compartir la ubicación del inmueble?',
-    };
     // Transición de stage todavía inválida tras 3 reintentos (ej: identification→finalizado)
     const guardExhaustedInvalidTransition =
       Boolean(nextStage) &&
@@ -808,19 +890,36 @@ async function processMessage(waId, messageObj) {
     const guardExhaustedUnallowedClosure =
       looksLikeClosureMessage(respuestaIA.mensaje_para_usuario) &&
       !isAllowedTerminalTurn({ currentStage, nextStage, userText: text, lastBotResponseType, responseType });
-    if (
-      (guardExhaustedInvalidTransition || guardExhaustedUnallowedClosure) &&
-      TASK_FALLBACK_MESSAGES[nextRequiredTask]
-    ) {
+    const fallbackAiState = getFallbackAiStateForTask(currentStage, nextRequiredTask);
+    const summaryFallbackMessage = nextRequiredTask === 'resumen_final'
+      ? buildSummaryFallbackMessage({
+          conversation,
+          valoresExcel,
+          lastBotMessage,
+          userText: text,
+          estimateFromCurrent: estimateFromCurrent || respuestaIA.datos_extraidos?.importe_estimado || '',
+          preferredSchedule,
+          locationAlreadyShared,
+          extractedDigital: respuestaIA.datos_extraidos?.acepta_videollamada,
+          extractedAttendeeName: respuestaIA.datos_extraidos?.nombre_contacto,
+          extractedAttendeeRelation: respuestaIA.datos_extraidos?.relacion_contacto || relationFromCurrent,
+        })
+      : '';
+    const fallbackMessage = summaryFallbackMessage || TASK_FALLBACK_MESSAGES[nextRequiredTask];
+    const fallbackResponseType = nextRequiredTask === 'resumen_final' ? 'resumen_final' : 'normal';
+    if ((guardExhaustedInvalidTransition || guardExhaustedUnallowedClosure) && fallbackMessage) {
       L.warn(`⚠️  Guard agotado: IA persistió en cierre (invalidTransition=${guardExhaustedInvalidTransition}) tras 3 intentos. Fallback hardcoded para tarea=${nextRequiredTask}`);
       respuestaIA = {
-        mensaje_para_usuario: TASK_FALLBACK_MESSAGES[nextRequiredTask],
+        mensaje_para_usuario: fallbackMessage,
         mensaje_entendido: true,
-        datos_extraidos: { estado_expediente: getNonTerminalAiStateForStage(currentStage), tipo_respuesta: 'normal' },
+        datos_extraidos: {
+          estado_expediente: fallbackAiState,
+          tipo_respuesta: fallbackResponseType,
+        },
       };
-      responseType = 'normal';
+      responseType = fallbackResponseType;
       hasOutgoingMessage = true;
-      nextStage = undefined;
+      nextStage = ESTADO_IA_TO_STAGE[fallbackAiState];
     }
 
     let aiWantsToSummarizeOrClose =
@@ -1127,5 +1226,7 @@ module.exports = {
     detectNextRequiredTask,
     looksLikeClosureMessage,
     isAllowedTerminalTurn,
+    getFallbackAiStateForTask,
+    buildSummaryFallbackMessage,
   },
 };

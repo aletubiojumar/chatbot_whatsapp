@@ -249,7 +249,7 @@ POST /webhook
  12. pdfGenerator          → si conversación terminada, genera PDF de transcripción
 ```
 
-Además del `stage` terminal clásico, el backend aplica un guardarraíl de negocio: ignora cierres prematuros (`finalizado` / `escalated`) cuando la conversación sigue en `consent` o `identification`, salvo rechazo explícito del consentimiento o petición clara de atención humana.
+Además del `stage` terminal clásico, el backend aplica un guardarraíl de negocio: ignora cierres prematuros (`finalizado` / `escalated`) cuando la conversación sigue en `consent` o `identification`, salvo rechazo explícito del consentimiento o petición clara de atención humana. Si la IA persiste en cerrar tras los reintentos y la tarea pendiente real es el resumen final, el backend construye un `resumen_final` con los datos ya conocidos y pide confirmación en vez de permitir el cierre prematuro.
 
 ### Logs en tiempo real (consola)
 
@@ -663,7 +663,7 @@ log.debug('payload completo:', body);  // solo visible con LOG_LEVEL=debug
 - Bloquea cierres terminales tempranos en `consent` e `identification`
 - Permite escalado temprano solo si el usuario rechaza continuar o pide explícitamente atención humana/llamada
 - **Guard de cierre prematuro (3 intentos):** si la IA genera un mensaje de cierre en una etapa no terminal, el backend reintenta con marcadores `[SISTEMA: CONTINUAR_FLUJO_SIN_CERRAR]` + `[SISTEMA: TAREA_OBLIGATORIA task=X]` para indicarle exactamente qué pregunta debe hacer
-- **Fallback hardcoded:** si tras 3 reintentos la IA persiste en cerrar, el backend sustituye su respuesta por una pregunta predefinida para la tarea pendiente (`confirmar_at_perito`, `pedir_estimacion`, `evaluar_digital`, `pedir_preferencia_horaria` o `pedir_ubicacion`)
+- **Fallback hardcoded:** si tras 3 reintentos la IA persiste en cerrar, el backend sustituye su respuesta por una salida controlada para la tarea pendiente: pregunta predefinida para `confirmar_at_perito`, `pedir_estimacion`, `evaluar_digital`, `pedir_preferencia_horaria` y `pedir_ubicacion`, o `resumen_final` autogenerado con los datos conocidos del expediente cuando ya toca resumir
 - El extractedAttendeeName de la respuesta IA se propaga al detector de tareas pendientes para evitar pedir de nuevo quien atiende al perito cuando la IA ya lo extrajo
 
 ### Fallback de modelos IA (`src/ai/aiModel.js`)

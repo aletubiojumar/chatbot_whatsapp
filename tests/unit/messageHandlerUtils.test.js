@@ -24,6 +24,8 @@ const {
   detectNextRequiredTask,
   looksLikeClosureMessage,
   isAllowedTerminalTurn,
+  getFallbackAiStateForTask,
+  buildSummaryFallbackMessage,
 } = _test;
 
 // ── detectEconomicEstimate ───────────────────────────────────────────────────
@@ -409,5 +411,42 @@ describe('getNonTerminalAiStateForStage', () => {
 
   test('agendando → agendando', () => {
     assert.equal(getNonTerminalAiStateForStage('agendando'), 'agendando');
+  });
+});
+
+describe('getFallbackAiStateForTask', () => {
+  test('resumen final desde identification avanza a valoracion', () => {
+    assert.equal(getFallbackAiStateForTask('identification', 'resumen_final'), 'valoracion');
+  });
+
+  test('otras tareas conservan el estado no terminal actual', () => {
+    assert.equal(getFallbackAiStateForTask('identification', 'pedir_estimacion'), 'identificacion');
+  });
+});
+
+describe('buildSummaryFallbackMessage', () => {
+  test('construye un resumen final con los datos conocidos y pide confirmación', () => {
+    const message = buildSummaryFallbackMessage({
+      conversation: {
+        attPerito: 'Matilde Ascension Linares Ales - asegurada - 34600000000',
+        danos: '2000 €',
+        digital: 'No',
+      },
+      valoresExcel: {
+        direccion: 'RIO GENIL 3, 2ºD',
+        municipio: 'Vélez-Málaga',
+        causa: 'Daños por agua',
+        nombre: 'Matilde Ascension Linares Ales',
+      },
+      locationAlreadyShared: false,
+    });
+
+    assert.match(message, /Dirección del siniestro: RIO GENIL 3, 2ºD, Vélez-Málaga\./);
+    assert.match(message, /Causa del siniestro: Daños por agua\./);
+    assert.match(message, /Persona que atenderá al perito: Matilde Ascension Linares Ales \(asegurada\)\./);
+    assert.match(message, /Estimación aproximada de daños: 2000 €\./);
+    assert.match(message, /Modalidad prevista: visita presencial\./);
+    assert.match(message, /Ubicación del riesgo: pendiente de envío\./);
+    assert.match(message, /responda "sí"/);
   });
 });
