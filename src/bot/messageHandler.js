@@ -332,6 +332,20 @@ function buildSummaryFallbackMessage({
   return `Perfecto. Antes de finalizar, le resumo los datos que tenemos:\n${summaryBody}\n\nSi todo es correcto, responda "sí".`;
 }
 
+function buildForcedConsentConfirmationResponse({ valoresExcel }) {
+  const insuredName = String(valoresExcel?.nombre || '').trim();
+  return {
+    mensaje_para_usuario: insuredName
+      ? `¿Hablo con ${insuredName}?`
+      : '¿Hablo con el titular del seguro?',
+    mensaje_entendido: true,
+    datos_extraidos: {
+      estado_expediente: 'identificacion',
+      tipo_respuesta: 'pregunta_identidad',
+    },
+  };
+}
+
 function buildForcedAttendeeConfirmationResponse({ valoresExcel, waId, relation = '' }) {
   return {
     mensaje_para_usuario: TASK_FALLBACK_MESSAGES.pedir_estimacion,
@@ -793,9 +807,13 @@ async function processMessage(waId, messageObj) {
     }
 
     // ── Llamada a la IA ──────────────────────────────────────────────────
+    const consentConfirmedNow = currentStage === 'consent' && isAffirmativeAck(text);
     const attendeeConfirmedNow = peritoAttendeeContext && isAffirmativeAck(text);
     let respuestaIA;
-    if (attendeeConfirmedNow && !estimateAlreadyKnown) {
+    if (consentConfirmedNow) {
+      respuestaIA = buildForcedConsentConfirmationResponse({ valoresExcel });
+      L.warn('⚠️  Consentimiento afirmativo detectado con acuse simple; se fuerza la pregunta de identidad sin pasar por la IA');
+    } else if (attendeeConfirmedNow && !estimateAlreadyKnown) {
       respuestaIA = buildForcedAttendeeConfirmationResponse({
         valoresExcel,
         waId,
@@ -1253,6 +1271,7 @@ module.exports = {
     isAllowedTerminalTurn,
     getFallbackAiStateForTask,
     buildSummaryFallbackMessage,
+    buildForcedConsentConfirmationResponse,
     buildForcedAttendeeConfirmationResponse,
   },
 };

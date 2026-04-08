@@ -26,6 +26,7 @@ const {
   isAllowedTerminalTurn,
   getFallbackAiStateForTask,
   buildSummaryFallbackMessage,
+  buildForcedConsentConfirmationResponse,
   buildForcedAttendeeConfirmationResponse,
 } = _test;
 
@@ -468,5 +469,17 @@ describe('buildForcedAttendeeConfirmationResponse', () => {
     assert.equal(response.datos_extraidos.nombre_contacto, 'Matilde Ascension Linares Ales');
     assert.equal(response.datos_extraidos.relacion_contacto, 'asegurada');
     assert.equal(response.datos_extraidos.telefono_contacto, '34674742564');
+  });
+});
+
+describe('buildForcedConsentConfirmationResponse', () => {
+  test('tras confirmar consentimiento fuerza la pregunta de identidad', () => {
+    const response = buildForcedConsentConfirmationResponse({
+      valoresExcel: { nombre: 'LINARES ALES, MATILDE ASCENSION' },
+    });
+
+    assert.equal(response.mensaje_para_usuario, '¿Hablo con LINARES ALES, MATILDE ASCENSION?');
+    assert.equal(response.datos_extraidos.estado_expediente, 'identificacion');
+    assert.equal(response.datos_extraidos.tipo_respuesta, 'pregunta_identidad');
   });
 });
