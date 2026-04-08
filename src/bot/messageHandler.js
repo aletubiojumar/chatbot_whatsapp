@@ -332,6 +332,20 @@ function buildSummaryFallbackMessage({
   return `Perfecto. Antes de finalizar, le resumo los datos que tenemos:\n${summaryBody}\n\nSi todo es correcto, responda "sí".`;
 }
 
+function buildForcedAttendeeConfirmationResponse({ valoresExcel, waId, relation = '' }) {
+  return {
+    mensaje_para_usuario: TASK_FALLBACK_MESSAGES.pedir_estimacion,
+    mensaje_entendido: true,
+    datos_extraidos: {
+      estado_expediente: 'valoracion',
+      tipo_respuesta: 'normal',
+      nombre_contacto: String(valoresExcel?.nombre || '').trim(),
+      relacion_contacto: String(relation || '').trim(),
+      telefono_contacto: normalizeContactPhone(waId),
+    },
+  };
+}
+
 function hasSharedLocation(conversation, currentLocationCoords) {
   return Boolean(String(currentLocationCoords || conversation?.coordenadas || '').trim());
 }
@@ -779,12 +793,23 @@ async function processMessage(waId, messageObj) {
     }
 
     // ── Llamada a la IA ──────────────────────────────────────────────────
-    let respuestaIA = await requestAIResponse({
-      historial,
-      mensajeUsuario: text,
-      contextoSistema,
-      valoresExcel,
-    });
+    const attendeeConfirmedNow = peritoAttendeeContext && isAffirmativeAck(text);
+    let respuestaIA;
+    if (attendeeConfirmedNow && !estimateAlreadyKnown) {
+      respuestaIA = buildForcedAttendeeConfirmationResponse({
+        valoresExcel,
+        waId,
+        relation: String(conversation.relacion || '').trim(),
+      });
+      L.warn('⚠️  Confirmación de AT. Perito detectada con acuse simple; se fuerza la pregunta de estimación sin pasar por la IA');
+    } else {
+      respuestaIA = await requestAIResponse({
+        historial,
+        mensajeUsuario: text,
+        contextoSistema,
+        valoresExcel,
+      });
+    }
     if (!respuestaIA.mensaje_para_usuario) {
       L.warn('⚠️  IA devolvió mensaje vacío — se solicita una nueva redacción');
       respuestaIA = await requestAIResponse({
@@ -1228,5 +1253,6 @@ module.exports = {
     isAllowedTerminalTurn,
     getFallbackAiStateForTask,
     buildSummaryFallbackMessage,
+    buildForcedAttendeeConfirmationResponse,
   },
 };

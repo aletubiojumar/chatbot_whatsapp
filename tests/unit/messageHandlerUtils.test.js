@@ -26,6 +26,7 @@ const {
   isAllowedTerminalTurn,
   getFallbackAiStateForTask,
   buildSummaryFallbackMessage,
+  buildForcedAttendeeConfirmationResponse,
 } = _test;
 
 // ── detectEconomicEstimate ───────────────────────────────────────────────────
@@ -448,5 +449,24 @@ describe('buildSummaryFallbackMessage', () => {
     assert.match(message, /Modalidad prevista: visita presencial\./);
     assert.match(message, /Ubicación del riesgo: pendiente de envío\./);
     assert.match(message, /responda "sí"/);
+  });
+});
+
+describe('buildForcedAttendeeConfirmationResponse', () => {
+  test('tras confirmar AT. Perito fuerza la petición de estimación y rellena el contacto', () => {
+    const response = buildForcedAttendeeConfirmationResponse({
+      valoresExcel: { nombre: 'Matilde Ascension Linares Ales' },
+      waId: '34674742564',
+      relation: 'asegurada',
+    });
+
+    assert.equal(
+      response.mensaje_para_usuario,
+      '¿Podría indicarnos una estimación aproximada del importe de los daños?'
+    );
+    assert.equal(response.datos_extraidos.estado_expediente, 'valoracion');
+    assert.equal(response.datos_extraidos.nombre_contacto, 'Matilde Ascension Linares Ales');
+    assert.equal(response.datos_extraidos.relacion_contacto, 'asegurada');
+    assert.equal(response.datos_extraidos.telefono_contacto, '34674742564');
   });
 });
