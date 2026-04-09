@@ -261,8 +261,8 @@ function looksLikeClosureMessage(text) {
     t.includes('le contactaremos en breve') ||
     t.includes('gracias por su paciencia') ||
     t.includes('su caso esta siendo atendido por nuestro equipo') ||
-    t.includes('finalizamos la gestion por este medio') ||
-    t.includes('finalizamos la comunicacion por este medio') ||
+    t.includes('su caso esta siendo atendido') ||
+    t.includes('seguimos con el expediente') ||
     t.includes('continuara con el expediente') ||
     t.includes('continuara la gestion') ||
     t.includes('el perito continuara la gestion') ||
@@ -270,7 +270,9 @@ function looksLikeClosureMessage(text) {
     t.includes('se pondra en contacto con usted') ||
     t.includes('el perito le llamara') ||
     t.includes('le llamara') ||
-    t.includes('trasladamos la informacion al perito')
+    t.includes('trasladamos la informacion al perito') ||
+    t.includes('finalizamos la gestion por este medio') ||
+    t.includes('finalizamos la comunicacion por este medio')
   );
 }
 
@@ -1142,6 +1144,28 @@ async function processMessage(waId, messageObj) {
         hasOutgoingMessage = true;
         nextStage = ESTADO_IA_TO_STAGE[fallbackAiState];
       }
+    }
+
+    // Protección extra: si aún detectamos un mensaje de cierre en etapas iniciales,
+    // forzamos el siguiente paso pendiente en lugar de dejar que el flujo termine.
+    if (
+      hasOutgoingMessage &&
+      looksLikeClosureMessage(respuestaIA.mensaje_para_usuario) &&
+      !isLegitimateClose &&
+      currentStage !== 'agendando' &&
+      currentStage !== 'finalizado' &&
+      currentStage !== 'escalated' &&
+      nextRequiredTask !== 'seguimiento_abierto'
+    ) {
+      const forcedTaskResponse = buildForcedTaskResponse(nextRequiredTask, {
+        valoresExcel,
+        currentStage,
+      });
+      respuestaIA = forcedTaskResponse;
+      responseType = String(respuestaIA.datos_extraidos?.tipo_respuesta || 'normal').trim() || 'normal';
+      hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
+      nextStage = ESTADO_IA_TO_STAGE[respuestaIA.datos_extraidos?.estado_expediente];
+      L.warn(`⚠️  Cierre temprano detectado en etapa ${currentStage} — forzado paso obligatorio ${nextRequiredTask}`);
     }
 
     let aiWantsToSummarizeOrClose = isTerminalResponseType(responseType);
