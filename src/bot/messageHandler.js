@@ -85,18 +85,22 @@ function isConsentPrompt(text) {
   );
 }
 
+function normalizeShortReply(text) {
+  return norm(text)
+    .trim()
+    .replace(/^[+]+|[+]+$/g, '')
+    .replace(/[.!,;:¿?]+$/g, '')
+    .trim();
+}
+
 function isAffirmativeAck(text) {
-  const t = String(text || '').trim().toLowerCase();
+  const t = normalizeShortReply(text);
   return /^(si|sí|ok|vale|perfecto|correcto|todo ok|todo correcto|de acuerdo|confirmado)$/.test(t);
 }
 
 function isNegativeAck(text) {
-  const t = norm(text).trim();
+  const t = normalizeShortReply(text);
   return /^(no|negativo|prefiero no|rechazo)$/.test(t);
-}
-
-function normalizeShortReply(text) {
-  return norm(text).trim().replace(/[.!,;:¿?]+$/g, '');
 }
 
 function buildRegisteredAddressText(valoresExcel = {}) {
@@ -835,6 +839,22 @@ async function processMessage(waId, messageObj) {
     const estimateFromCurrent = detectEconomicEstimate(text);
     const estimateAlreadyKnown = Boolean((conversation.danos && String(conversation.danos).trim()) || estimateFromCurrent);
 
+    L.log('🔎 Estado previo |',
+      `stage=${currentStage}`,
+      `addressStatus=${currentAddressStatus}`,
+      `locationRequestCount=${locationRequestCount}`,
+      `lastBotResponseType=${lastBotResponseType}`,
+      `relacion=${String(conversation.relacion || '').trim()}`,
+      `danos=${String(conversation.danos || '').trim()}`
+    );
+    L.log('🔎 Contexto de respuesta |',
+      `peritoAttendeeContext=${peritoAttendeeContext}`,
+      `relationFromCurrent=${String(relationFromCurrent || '').trim()}`,
+      `relationAlreadyKnown=${relationAlreadyKnown}`,
+      `estimateFromCurrent=${String(estimateFromCurrent || '').trim()}`,
+      `estimateAlreadyKnown=${estimateAlreadyKnown}`
+    );
+
     // Enriquecer contexto con CP si se detecta
     const cpInfo = await lookupCP(text);
     const hoy = new Date();
@@ -1125,6 +1145,15 @@ async function processMessage(waId, messageObj) {
     }
 
     let aiWantsToSummarizeOrClose = isTerminalResponseType(responseType);
+
+    L.log('🔎 Decision interno |',
+      `nextRequiredTask=${nextRequiredTask}`,
+      `responseType=${responseType}`,
+      `nextStage=${nextStage || '—'}`,
+      `hasOutgoingMessage=${hasOutgoingMessage}`,
+      `aiWantsToClose=${aiWantsToClose}`,
+      `mustForceTaskNow=${mustForceTaskNow}`
+    );
 
     if (
       nextRequiredTask === 'pedir_ubicacion' &&
