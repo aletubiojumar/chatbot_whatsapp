@@ -1,10 +1,9 @@
 // src/bot/messageHandler.js
 const conversationManager = require('./conversationManager');
-const { procesarConIA, translateMessagesToSpanish } = require('../ai/aiModel');
+const { procesarConIA } = require('../ai/aiModel');
 const adapter             = require('../channels/whatsappAdapter');
 const { canProcess, isValidTransition } = require('./stateMachine');
 const { triggerEncargoSync } = require('./peritolineAutoSync');
-const { generateConversationPdf } = require('../utils/pdfGenerator');
 const { buildInitialTemplateText } = require('./templateSender');
 const fileLogger          = require('../utils/fileLogger');
 const axios = require('axios');
@@ -30,8 +29,6 @@ const ESTADO_IA_TO_STAGE = {
   identificacion: 'identification',
   valoracion:     'valoracion',
   agendando:      'agendando',
-  finalizado:      'finalizado',
-  escalado_humano: 'escalated',
 };
 
 const TASK_FALLBACK_MESSAGES = {
@@ -40,6 +37,7 @@ const TASK_FALLBACK_MESSAGES = {
   evaluar_digital: '¿Le vendría bien realizar la peritación por videollamada, o prefiere que el perito acuda en persona?',
   pedir_preferencia_horaria: '¿Prefiere que la visita del perito sea por la mañana o por la tarde?',
   pedir_ubicacion: 'Para poder asignar correctamente al perito, ¿podría compartir la ubicación del inmueble?',
+  seguimiento_abierto: 'Gracias. Hemos tomado nota de la información. La conversación sigue abierta por si necesita añadir algún dato más.',
 };
 
 // Cache de CP → localidad para no repetir peticiones
@@ -179,31 +177,9 @@ function looksLikeClosureMessage(text) {
 }
 
 function isAllowedTerminalTurn({
-  currentStage,
-  nextStage,
-  userText,
-  lastBotResponseType,
   responseType,
-  preferredSchedule = '',
 }) {
-  if (responseType !== 'cierre_definitivo') return false;
-
-  if (nextStage === 'finalizado') {
-    // La transición a finalizado solo es legítima si el stage actual lo permite Y el resumen fue enviado
-    return canApplyStageTransition(currentStage, 'finalizado') &&
-      hasSchedulePreference(preferredSchedule) &&
-      lastBotResponseType === 'resumen_final' &&
-      isAffirmativeAck(userText);
-  }
-
-  if (nextStage === 'escalated') {
-    return (
-      (currentStage === 'consent' && isNegativeAck(userText)) ||
-      isExplicitHumanEscalationIntent(userText)
-    );
-  }
-
-  return false;
+  return responseType === '__never__';
 }
 
 function hasMeaningfulAttendee(conversation, { lastBotMessage = '', userText = '', extractedAttendeeName = '' } = {}) {
@@ -244,7 +220,7 @@ function detectNextRequiredTask({
 
   if (!locationAlreadyShared && locationRequestCount < 2) return 'pedir_ubicacion';
 
-  return 'resumen_final';
+  return 'seguimiento_abierto';
 }
 
 function buildBlockedTerminalRetryContext(currentStage) {
@@ -259,10 +235,16 @@ function buildBlockedClosureRetryContext(currentStage, task) {
 }
 
 function getFallbackAiStateForTask(currentStage, task) {
-  if (task === 'resumen_final' && currentStage === 'identification') {
-    return 'valoracion';
-  }
+  if (task === 'seguimiento_abierto') return 'agendando';
   return getNonTerminalAiStateForStage(currentStage);
+}
+
+function isTerminalStage(stage) {
+  return stage === 'finalizado' || stage === 'escalated';
+}
+
+function isTerminalResponseType(responseType) {
+  return responseType === 'resumen_final' || responseType === 'cierre_definitivo';
 }
 
 function buildSummaryFallbackMessage({
@@ -599,46 +581,15 @@ async function processMessage(waId, messageObj) {
     const stateCheck = canProcess(conversation);
     if (!stateCheck.ok) {
       L.log(`⛔ Bloqueado (${stateCheck.reason}) stage=${conversation?.stage}`);
-      if (stateCheck.aiBehavior === 'reply_once_then_close') {
-        const { mensajesPrevios, historial, valoresExcel } = await buildAIConversationContext(conversation, nexp);
-        const terminalMarker = conversation?.stage === 'finalizado'
-          ? '[SISTEMA: TERMINAL_FINALIZADO]'
-          : '[SISTEMA: TERMINAL_ESCALADO]';
-        const respuestaTerminal = await requestAIResponse({
-          historial,
-          mensajeUsuario: text,
-          contextoSistema: terminalMarker,
-          valoresExcel,
-        });
-        const terminalMessage = respuestaTerminal.mensaje_para_usuario;
-        const terminalUpdates = {
-          stage: 'cerrado',
-          lastBotResponseType: 'cierre_definitivo',
-          ...(conversation?.status === 'escalated' ? { status: 'pending' } : {}),
-        };
-
-        if (terminalMessage) {
-          await adapter.sendText(waId, terminalMessage);
-          terminalUpdates.mensajes = [
-            ...mensajesPrevios,
-            { direction: 'in',  text,            timestamp: new Date().toISOString() },
-            { direction: 'out', text: terminalMessage, timestamp: new Date().toISOString() },
-          ];
-          await conversationManager.recordResponse(waId);
-        }
-
-        await conversationManager.createOrUpdateConversation(waId, terminalUpdates);
-      }
-      // Guardar coordenadas aunque la conversación esté cerrada y sincronizar PeritoLine
       if (locationCoords) {
         const lateUpdate = { coordenadas: locationCoords };
         if (conversation.status === 'awaiting_location') {
-          lateUpdate.status = 'pending'; // desactivar standby al recibir la ubicación
+          lateUpdate.status = 'pending';
           lateUpdate.locationStandbyUntil = 0;
         }
         await conversationManager.createOrUpdateConversation(waId, lateUpdate);
         triggerEncargoSync(nexp, 'coordenadas_tardias', '', false, true);
-        L.log(`📍 Coordenadas recibidas en stage terminal, guardadas y sync disparado: ${locationCoords}`);
+        L.log(`📍 Coordenadas recibidas, guardadas y sync disparado: ${locationCoords}`);
       }
       return;
     }
@@ -709,7 +660,7 @@ async function processMessage(waId, messageObj) {
     // Estado de espera de ubicación
     if (conversation.status === 'awaiting_location') {
       if (locationCoords) {
-        contextoSistema += '\n[UBICACIÓN RECIBIDA]: El asegurado acaba de enviar su ubicación GPS. Acéptala y procede directamente con el resumen final de datos para concluir la conversación.';
+        contextoSistema += '\n[UBICACIÓN RECIBIDA]: El asegurado acaba de enviar su ubicación GPS. Acéptala y continúa con el flujo normal sin cerrar la conversación.';
       } else {
         contextoSistema += '\n[UBICACIÓN PENDIENTE]: La conversación está pendiente de recibir la ubicación del riesgo. El asegurado indicó que la enviaría más tarde. Si ahora escribe sin enviar GPS, responde brevemente y recuérdale que puede compartir la ubicación cuando quiera.';
       }
@@ -718,9 +669,9 @@ async function processMessage(waId, messageObj) {
     // Reintento de petición de ubicación si el asegurado la ignoró
     if (!locationCoords && conversation.status !== 'awaiting_location' && lastBotResponseType === 'peticion_ubicacion') {
       if (locationRequestCount < 2) {
-        contextoSistema += '\n[UBICACIÓN IGNORADA – REINTENTAR]: El asegurado ha respondido sin enviar la ubicación GPS. Vuelve a pedirla con el mismo mensaje exacto antes de continuar con el resumen.';
+        contextoSistema += '\n[UBICACIÓN IGNORADA – REINTENTAR]: El asegurado ha respondido sin enviar la ubicación GPS. Vuelve a pedirla con el mismo mensaje exacto antes de continuar con el flujo.';
       } else {
-        contextoSistema += '\n[UBICACIÓN IGNORADA – SEGUNDA VEZ]: El asegurado ha ignorado la petición de ubicación en dos ocasiones. Continúa con el resumen sin pedirla más e incluye «ubicacion_pendiente»: true en datos_extraidos.';
+        contextoSistema += '\n[UBICACIÓN IGNORADA – SEGUNDA VEZ]: El asegurado ha ignorado la petición de ubicación en dos ocasiones. Continúa con el flujo sin cerrar la conversación e incluye «ubicacion_pendiente»: true en datos_extraidos.';
       }
     }
     contextoSistema += '\n[DISTINCIÓN DE CAMPOS]: "Relación" es SOLO la relación del interlocutor actual con el asegurado. "AT. Perito" es SOLO la persona que atenderá al perito en la visita.';
@@ -734,8 +685,8 @@ async function processMessage(waId, messageObj) {
       const estimateRef = estimateFromCurrent || String(conversation.danos || '').trim();
       contextoSistema += `\n[DATO YA INFORMADO]: Ya existe estimación económica (${estimateRef}). No la vuelvas a pedir y avanza al siguiente paso.`;
     }
-    if (lastBotResponseType === 'resumen_final' && isAffirmativeAck(text)) {
-      contextoSistema += '\n[CONFIRMACIÓN RESUMEN]: El usuario confirma que los datos están correctos. Envía despedida final y marca estado_expediente="finalizado".';
+    if ((lastBotResponseType === 'resumen_final' || lastBotResponseType === 'cierre_definitivo') && isAffirmativeAck(text)) {
+      contextoSistema += '\n[CONFIRMACIÓN DATOS]: El usuario confirma que los datos están correctos. Agradece brevemente y mantén la conversación abierta, sin despedida final ni cierre.';
     }
     if (identityConfirmedNow) {
       contextoSistema += '\n[CONFIRMACIÓN IDENTIDAD]: El usuario responde afirmativamente a tu pregunta de identidad/relación. Da la identificación por confirmada y avanza al siguiente dato pendiente. PROHIBIDO repetir la misma pregunta de identidad.';
@@ -784,11 +735,11 @@ async function processMessage(waId, messageObj) {
 
             if (result.success) {
               const slotText = formatSlotForUser(proposedSlot);
-              contextoSistema += `\n[CITA CONFIRMADA EN CALENDARIO]: La videoperitación ha sido registrada en el calendario de Outlook para el ${slotText}. Confirma al asegurado la fecha y hora exacta y marca estado_expediente="finalizado".`;
+              contextoSistema += `\n[CITA CONFIRMADA EN CALENDARIO]: La videoperitación ha sido registrada en el calendario de Outlook para el ${slotText}. Confirma al asegurado la fecha y hora exacta y mantén estado_expediente="agendando". No cierres la conversación.`;
               L.log(`📅 Cita Outlook creada: ${slotText}`);
             }
           } catch (err) {
-            contextoSistema += `\n[ERROR CALENDARIO]: No se pudo crear la cita (${err.message}). Informa al asegurado de que le confirmaremos la fecha por otro medio y finaliza la conversación.`;
+            contextoSistema += `\n[ERROR CALENDARIO]: No se pudo crear la cita (${err.message}). Informa al asegurado de que confirmaremos la fecha por otro medio y mantén la conversación abierta.`;
             L.err(`❌ Error creando cita Outlook: ${err.message}`);
           }
 
@@ -799,7 +750,7 @@ async function processMessage(waId, messageObj) {
             if (slot) {
               saveProposedSlot(nexp, slot);
               const slotText = formatSlotForUser(slot);
-              contextoSistema += `\n[SLOT DISPONIBLE EN OUTLOOK]: Hay disponibilidad el ${slotText}. Propón EXACTAMENTE esta fecha y hora al asegurado para que confirme. No marques "finalizado" hasta que el asegurado confirme.`;
+              contextoSistema += `\n[SLOT DISPONIBLE EN OUTLOOK]: Hay disponibilidad el ${slotText}. Propón EXACTAMENTE esta fecha y hora al asegurado para que confirme. Mantén la conversación abierta.`;
               L.log(`📅 Slot propuesto: ${slotText}`);
             } else {
               contextoSistema += `\n[SIN DISPONIBILIDAD]: No hay huecos disponibles en los próximos ${process.env.CALENDAR_HORIZON_DAYS || 5} días laborables para la preferencia "${currentPref}". Informa al asegurado y ofrece contactar por teléfono para gestionar la cita manualmente.`;
@@ -865,61 +816,44 @@ async function processMessage(waId, messageObj) {
       locationRequestCount,
     });
 
-    // ── Bloqueo determinista de cierres prematuros ────────────────────────────
-    // Si la IA intenta cerrar la conversación sin que sea legítimo (sin resumen
-    // confirmado, desde etapa no permitida, o con texto equivalente a cierre),
-    // se reemplaza INMEDIATAMENTE por la pregunta hardcoded de la tarea pendiente.
-    // No se reintenta la IA: la decisión es determinista y no depende del modelo.
+    // ── Neutralización determinista de cierre/resumen ─────────────────────────
+    // El bot ya no puede cerrar la conversación. Si la IA intenta resumir,
+    // despedirse, derivar o marcar un stage terminal, se sustituye por el
+    // siguiente paso pendiente o por un acuse no terminal.
     const isLegitimateClose = isAllowedTerminalTurn({
-      currentStage,
-      nextStage,
-      userText: text,
-      lastBotResponseType,
       responseType,
-      preferredSchedule,
     });
     const aiWantsToClose =
-      (nextStage === 'finalizado' || nextStage === 'escalated') ||
+      isTerminalResponseType(responseType) ||
+      isTerminalStage(nextStage) ||
       (hasOutgoingMessage && looksLikeClosureMessage(respuestaIA.mensaje_para_usuario));
 
     if (aiWantsToClose && !isLegitimateClose) {
       const fallbackAiState = getFallbackAiStateForTask(currentStage, nextRequiredTask);
-      const summaryFallbackMessage = nextRequiredTask === 'resumen_final'
-        ? buildSummaryFallbackMessage({
-            conversation,
-            valoresExcel,
-            lastBotMessage,
-            userText: text,
-            estimateFromCurrent: estimateFromCurrent || respuestaIA.datos_extraidos?.importe_estimado || '',
-            preferredSchedule,
-            locationAlreadyShared,
-            extractedDigital: respuestaIA.datos_extraidos?.acepta_videollamada,
-            extractedAttendeeName: respuestaIA.datos_extraidos?.nombre_contacto,
-            extractedAttendeeRelation: respuestaIA.datos_extraidos?.relacion_contacto || relationFromCurrent,
-          })
-        : '';
-      const fallbackMessage = summaryFallbackMessage || TASK_FALLBACK_MESSAGES[nextRequiredTask];
-      const fallbackResponseType = nextRequiredTask === 'resumen_final' ? 'resumen_final' : 'normal';
+      const fallbackMessage = TASK_FALLBACK_MESSAGES[nextRequiredTask];
+      const canReuseAiMessage =
+        hasOutgoingMessage &&
+        !looksLikeClosureMessage(respuestaIA.mensaje_para_usuario) &&
+        !isTerminalResponseType(responseType);
+      const safeMessage = fallbackMessage || (canReuseAiMessage ? respuestaIA.mensaje_para_usuario : TASK_FALLBACK_MESSAGES.seguimiento_abierto);
 
-      if (fallbackMessage) {
-        L.warn(`⚠️  Cierre prematuro bloqueado (stage=${currentStage}, nextStage=${nextStage || '—'}, tarea=${nextRequiredTask}) — fallback aplicado`);
+      if (safeMessage) {
+        L.warn(`⚠️  Intento de cierre/resumen bloqueado (stage=${currentStage}, nextStage=${nextStage || '—'}, tarea=${nextRequiredTask}) — fallback aplicado`);
         respuestaIA = {
-          mensaje_para_usuario: fallbackMessage,
+          mensaje_para_usuario: safeMessage,
           mensaje_entendido: true,
           datos_extraidos: {
             estado_expediente: fallbackAiState,
-            tipo_respuesta: fallbackResponseType,
+            tipo_respuesta: 'normal',
           },
         };
-        responseType = fallbackResponseType;
+        responseType = 'normal';
         hasOutgoingMessage = true;
         nextStage = ESTADO_IA_TO_STAGE[fallbackAiState];
       }
     }
 
-    let aiWantsToSummarizeOrClose =
-      responseType === 'resumen_final' ||
-      responseType === 'cierre_definitivo';
+    let aiWantsToSummarizeOrClose = isTerminalResponseType(responseType);
 
     if (
       !locationAlreadyShared &&
@@ -939,9 +873,7 @@ async function processMessage(waId, messageObj) {
         responseType = String(respuestaIA.datos_extraidos?.tipo_respuesta || 'normal').trim() || 'normal';
         hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
         nextStage = ESTADO_IA_TO_STAGE[respuestaIA.datos_extraidos?.estado_expediente];
-        aiWantsToSummarizeOrClose =
-          responseType === 'resumen_final' ||
-          responseType === 'cierre_definitivo';
+        aiWantsToSummarizeOrClose = isTerminalResponseType(responseType);
         L.warn('⚠️  IA intentó resumir/cerrar sin pedir ubicación GPS — se fuerza una nueva respuesta');
       }
     }
@@ -1066,26 +998,11 @@ async function processMessage(waId, messageObj) {
       if (nuevoStage) {
         if (!canApplyStageTransition(currentStage, nuevoStage)) {
           L.warn(`⚠️  Transición de stage inválida ${currentStage} → ${nuevoStage}; se mantiene stage actual`);
-        } else if (shouldBlockEarlyTerminalStage({
-          currentStage,
-          nextStage: nuevoStage,
-          userText: text,
-          hasOutgoingMessage,
-        })) {
-          L.warn(`⚠️  Stage terminal prematuro ${currentStage} → ${nuevoStage}; se mantiene stage actual`);
-        } else if (!hasOutgoingMessage && nuevoStage === 'escalated') {
-          stageAplicado = nuevoStage;
-          excelUpdates.stage = nuevoStage;
-          excelUpdates.contacto = 'Sí';
-          L.warn('⚠️  La conversación se marca como escalada sin mensaje saliente por indisponibilidad de modelos');
-        } else if ((nuevoStage === 'finalizado' || nuevoStage === 'escalated') && tipo_respuesta !== 'cierre_definitivo') {
-          L.warn(`⚠️  IA marcó "${estado_expediente}" sin mensaje terminal explícito; no se cierra aún`);
+        } else if (isTerminalStage(nuevoStage) || isTerminalResponseType(tipo_respuesta)) {
+          L.warn(`⚠️  Estado terminal ignorado (${estado_expediente || '—'} / ${tipo_respuesta || '—'}) — la conversación permanece abierta`);
         } else {
           stageAplicado = nuevoStage;
           excelUpdates.stage = nuevoStage;
-          if (nuevoStage === 'finalizado' || nuevoStage === 'escalated') {
-            excelUpdates.contacto = 'Sí'; // Conversación terminada con el asegurado
-          }
           L.log(`🔄 Stage ${currentStage} → ${nuevoStage}`);
         }
       }
@@ -1108,61 +1025,6 @@ async function processMessage(waId, messageObj) {
         await conversationManager.createOrUpdateConversation(waId, { contacto: 'Sí' });
         triggerEncargoSync(nexp, 'primera_respuesta');
         L.log(`🔗 Primera respuesta → sync PeritoLine iniciado (asignar perito + contacto)`);
-      }
-
-      // Disparo al cerrar conversación (principalmente para subir PDF).
-      // Nota: incluye isFirstResponse para casos donde la primera respuesta ya causa escalado/finalizado.
-      if (excelUpdates.contacto === 'Sí' && (stageAplicado === 'finalizado' || stageAplicado === 'escalated')) {
-        const digitalVal = excelUpdates.digital || conversation.digital;
-        const horarioVal = String(excelUpdates.horario || conversation.horario || '').trim().toLowerCase();
-        let horarioLabel = '';
-        if (horarioVal.includes('mañana') || horarioVal.includes('manana')) horarioLabel = 'Mañana';
-        else if (horarioVal.includes('tarde')) horarioLabel = 'Tarde';
-        let anotacion;
-        if (stageAplicado === 'escalated') {
-          anotacion = '[IA] Solicita llamada';
-        } else if (digitalVal === 'Sí') {
-          anotacion = horarioLabel ? `[IA] Digital: Sí (${horarioLabel})` : '[IA] Digital: Sí';
-        } else if (digitalVal === 'No') {
-          anotacion = '[IA] Digital: Rechaza';
-        } else {
-          anotacion = '[IA] Digital: sin determinar';
-        }
-        triggerEncargoSync(nexp, `stage_${stageAplicado}`, anotacion, false, true);
-      }
-
-      // Generar PDF de transcripción al finalizar la conversación
-      if (stageAplicado === 'finalizado' || stageAplicado === 'escalated') {
-        const allMsgs = excelUpdates.mensajes || await conversationManager.getMensajes(waId);
-        const pdfExtra = {
-          stage:     stageAplicado,
-          contacto:  excelUpdates.contacto,
-          attPerito: conversation.attPerito,
-          danos:     conversation.danos     || excelUpdates.danos,
-          digital:   conversation.digital   || excelUpdates.digital,
-          horario:   conversation.horario   || excelUpdates.horario,
-        };
-
-        generateConversationPdf(nexp, userData, allMsgs, pdfExtra)
-          .catch(e => {
-            console.error(`❌ Error generando PDF nexp=${nexp}:`, e.message);
-            FL.error(`Error generando PDF: ${e.message}`);
-          });
-
-        // PDF traducido al español si la conversación fue en otro idioma
-        const idioma = excelUpdates.idioma || conversation.idioma;
-        if (idioma && idioma !== 'es') {
-          translateMessagesToSpanish(allMsgs, idioma)
-            .then(translated => generateConversationPdf(nexp, userData, translated, {
-              ...pdfExtra,
-              filename: `conversation_${nexp}_español.pdf`,
-              translatedFrom: idioma,
-            }))
-            .catch(e => {
-              console.error(`❌ Error generando PDF traducido nexp=${nexp}:`, e.message);
-              FL.error(`Error generando PDF traducido: ${e.message}`);
-            });
-        }
       }
     }
 
@@ -1189,9 +1051,6 @@ async function processMessage(waId, messageObj) {
     } else {
       L.warn('⚠️  La IA no devolvió un mensaje saliente y no se envía texto desde código');
     }
-
-    // No cerramos aquí: stage "finalizado" permite una última respuesta segura
-    // si el usuario vuelve a escribir. El paso a "cerrado" se hace en canProcess.
 
   } catch (error) {
     const nexpCtx = (await conversationManager.getNexpByWaId(waId)) || waId;

@@ -240,13 +240,13 @@ const schema = {
         preferencia_horaria: { type: SchemaType.STRING },
         estado_expediente: {
           type: SchemaType.STRING,
-          enum: ['identificacion', 'valoracion', 'agendando', 'finalizado', 'escalado_humano'],
+          enum: ['identificacion', 'valoracion', 'agendando'],
         },
         tipo_respuesta: {
           type: SchemaType.STRING,
-          enum: ['normal', 'pregunta_identidad', 'peticion_ubicacion', 'resumen_final', 'cierre_definitivo'],
+          enum: ['normal', 'pregunta_identidad', 'peticion_ubicacion'],
           description:
-            'Clasifica el mensaje saliente actual: usa "pregunta_identidad", "peticion_ubicacion", "resumen_final", "cierre_definitivo" o "normal".',
+            'Clasifica el mensaje saliente actual: usa "pregunta_identidad", "peticion_ubicacion" o "normal".',
         },
         idioma_conversacion: {
           type: SchemaType.STRING,
@@ -289,42 +289,32 @@ function buildPromptFinal(valoresExcel) {
 14. VIDEOPERITACIÓN: solo explica qué es y cómo funciona si el usuario expresa dudas o lo pide. Si no hay dudas, pregunta directamente disponibilidad (mañana o tarde).
 15. FORMATO DE SALIDA: responde siempre en texto plano. Para listas usa líneas con viñetas "•". Nunca uses etiquetas HTML.
 16. CAMPO "preferencia_horaria": rellénalo SOLO cuando el asegurado exprese claramente su preferencia horaria para la visita del perito. Usa "mañana" o "tarde". Déjalo vacío ("") si aún no lo ha indicado.
-16.b CIERRE LIGADO A PREFERENCIA HORARIA: no puedes emitir "resumen_final" ni "cierre_definitivo" mientras "preferencia_horaria" siga vacía. Antes de cerrar, el asegurado debe haber indicado claramente "mañana" o "tarde".
+16.b CONVERSACIÓN SIEMPRE ABIERTA: está PROHIBIDO cerrar, despedir, finalizar, resumir para terminar o derivar la conversación. Aunque todos los datos estén completos, mantén siempre un tono abierto y devuelve un estado no terminal.
 17. CAMPO "estado_expediente": debes rellenarlo en cada respuesta siguiendo estos criterios:
    - "identificacion": mientras estás verificando identidad, datos del siniestro o dirección.
    - "valoracion": cuando estás recogiendo información sobre los daños, estimación económica o idoneidad para videoperitación.
    - "agendando": cuando estás coordinando la preferencia horaria para la visita.
-   - "finalizado": SOLO cuando hayas enviado el mensaje de cierre definitivo tras confirmar el resumen final con el asegurado.
-   - "escalado_humano": SOLO cuando hayas confirmado expresamente al asegurado que el perito le llamará por petición suya de hablar con una persona, O cuando el asegurado haya rechazado el consentimiento por SEGUNDA VEZ tras haber recibido ya una explicación.
 18. IDIOMA: Detecta el idioma de los mensajes del usuario y rellena SIEMPRE el campo "idioma_conversacion" con el código ISO 639-1. Responde SIEMPRE en el idioma del usuario, sin preguntar confirmación.
-19. RECHAZO DE CONSENTIMIENTO: Cuando el usuario rechace continuar antes de haber dado consentimiento, envía un breve mensaje de despedida y establece estado_expediente="escalado_humano". No insistas.
+19. RECHAZO DE CONSENTIMIENTO: Cuando el usuario rechace continuar antes de haber dado consentimiento, responde brevemente sin despedida final, deja claro que puede escribir más adelante si cambia de opinión y mantén un estado no terminal coherente.
 20. RESPUESTA NEGATIVA A PREGUNTA DE IDENTIDAD: Si el usuario ya dio consentimiento y responde "no" a la pregunta de si es el asegurado, NO cierres la conversación. Pregunta quién es y qué relación tiene.
 21. MARCADORES TÉCNICOS DEL SISTEMA:
    - Si aparece "[SISTEMA: MENSAJE_NO_COMPATIBLE", responde brevemente pidiendo que continúe por escrito. Si se trata de imágenes, vídeos o documentos, aplica además la regla del apartado "GESTIÓN DE IMÁGENES Y DOCUMENTOS".
-   - Si aparece "[SISTEMA: TERMINAL_FINALIZADO]", el expediente ya se cerró correctamente. No reabras la gestión; responde una sola vez de forma breve y coherente con la sección "Mensaje si vuelve a escribir". Mantén estado_expediente="finalizado".
-   - Si aparece "[SISTEMA: TERMINAL_ESCALADO]", el expediente ya fue derivado a humano. Responde una sola vez de forma breve indicando que el perito o el equipo continuará la gestión. Mantén estado_expediente="escalado_humano".
    - Si aparece "[SISTEMA: FORZAR_PEDIR_UBICACION]", tu siguiente mensaje debe ser EXCLUSIVAMENTE la petición de ubicación del riesgo que corresponda según el tipo de intervención activo. No cierres ni resumas todavía.
    - Si aparece "[SISTEMA: REINTENTO_MENSAJE_VACIO]", rehace la respuesta pendiente de forma breve, natural y no vacía, manteniendo el flujo actual.
    - Si aparece "[SISTEMA: NO_REPETIR_IDENTIDAD]", el usuario ya confirmó la identidad. No repitas esa pregunta y pasa al siguiente dato pendiente.
    - Si aparece "[SISTEMA: CONTINUAR_FLUJO_SIN_CERRAR" (con o sin datos extra como "stage=..."), tu respuesta anterior intentó cerrar o derivar antes de tiempo. Está prohibido cerrar, resumir o escalar ahora. Continúa con la siguiente pregunta pendiente y devuelve un estado no terminal coherente.
-   - Si aparece "[SISTEMA: PROHIBIDO_CIERRE_SIN_RESUMEN" (con o sin datos extra como "stage=..."), NO puedes enviar mensajes equivalentes a cierre, como indicar que el equipo o el perito continuará la gestión, que contactará más tarde o que la conversación termina. Continúa estrictamente con la siguiente tarea pendiente del flujo. No cierres hasta haber emitido el RESUMEN FINAL OBLIGATORIO y recibir confirmación.
+   - Si aparece "[SISTEMA: PROHIBIDO_CIERRE_SIN_RESUMEN" (con o sin datos extra como "stage=..."), NO puedes enviar mensajes equivalentes a cierre, como indicar que el equipo o el perito continuará la gestión, que contactará más tarde o que la conversación termina. Continúa estrictamente con la siguiente tarea pendiente del flujo. La conversación debe permanecer abierta.
    - Si aparece "[SISTEMA: TAREA_OBLIGATORIA task=confirmar_at_perito]", tu siguiente mensaje debe pedir EXCLUSIVAMENTE quién atenderá al perito. Si puede ser la misma persona, puedes preguntarlo de forma directa. No cierres ni resumas.
    - Si aparece "[SISTEMA: TAREA_OBLIGATORIA task=pedir_estimacion]", tu siguiente mensaje debe pedir EXCLUSIVAMENTE la estimación económica aproximada de los daños. No cierres ni resumas.
    - Si aparece "[SISTEMA: TAREA_OBLIGATORIA task=evaluar_digital]", tu siguiente mensaje debe continuar EXCLUSIVAMENTE con la tarea de videoperitación según las reglas del prompt: ofrecerla si procede o indicar intervención directa del perito si no procede. No cierres ni resumas todavía.
    - Si aparece "[SISTEMA: TAREA_OBLIGATORIA task=pedir_preferencia_horaria]", tu siguiente mensaje debe pedir EXCLUSIVAMENTE la preferencia horaria disponible (mañana o tarde). No cierres ni resumas.
    - Si aparece "[SISTEMA: TAREA_OBLIGATORIA task=pedir_ubicacion]", tu siguiente mensaje debe ser EXCLUSIVAMENTE la petición de ubicación del riesgo. No cierres ni resumas.
-   - Si aparece "[SISTEMA: TAREA_OBLIGATORIA task=resumen_final]", tu siguiente mensaje debe ser EXCLUSIVAMENTE el RESUMEN FINAL OBLIGATORIO. Usa tipo_respuesta="resumen_final". No envíes todavía el cierre definitivo.
-   - Si aparece "[SISTEMA: UBICACION_STANDBY_EXPIRADA]", la espera de ubicación ha vencido. Cierra de forma breve indicando que el perito continuará la gestión por otro medio y usa estado_expediente="escalado_humano".
+   - Si aparece "[SISTEMA: UBICACION_STANDBY_EXPIRADA]", la espera de ubicación ha vencido. Responde brevemente recordando que seguimos pendientes de la ubicación y mantén un estado no terminal.
 22. CAMPO "tipo_respuesta": rellénalo SIEMPRE.
    - "pregunta_identidad": cuando tu mensaje principal sea confirmar si hablas con el asegurado o pedir la relación del interlocutor.
    - "peticion_ubicacion": cuando solicites compartir la ubicación o GPS del riesgo.
-   - "resumen_final": cuando envíes el resumen previo a la confirmación final de datos.
-   - "cierre_definitivo": solo cuando envíes el cierre definitivo o la única respuesta permitida tras un expediente ya cerrado.
    - "normal": para cualquier otro mensaje.
-23. PROHIBICIÓN ABSOLUTA DE CIERRE ANTICIPADO: Queda TERMINANTEMENTE PROHIBIDO enviar mensajes equivalentes a "Su caso está siendo atendido por nuestro equipo. Le contactaremos en breve." o cualquier variante que indique que la conversación ha terminado, que un humano se encargará o que el perito contactará al asegurado, SALVO en estos dos casos únicos:
-   a) Cuando el contexto contenga el marcador [SISTEMA: TERMINAL_ESCALADO] o [SISTEMA: TERMINAL_FINALIZADO].
-   b) En el mensaje de cierre definitivo (tipo_respuesta="cierre_definitivo") emitido DESPUÉS de que el asegurado haya respondido afirmativamente al RESUMEN FINAL OBLIGATORIO (tipo_respuesta="resumen_final").
-   En CUALQUIER OTRO MOMENTO del flujo (identificación, valoración, agendando, confirmación de datos parciales), debes continuar con la siguiente pregunta pendiente. Nunca anticipes el cierre.
+23. PROHIBICIÓN ABSOLUTA DE CIERRE: Queda TERMINANTEMENTE PROHIBIDO enviar mensajes equivalentes a "Su caso está siendo atendido por nuestro equipo. Le contactaremos en breve." o cualquier variante que indique que la conversación ha terminado, que un humano se encargará o que el perito contactará al asegurado. En TODO MOMENTO del flujo debes continuar con la siguiente pregunta pendiente o, si ya no falta ningún dato, responder de forma breve manteniendo la conversación abierta.
 24. DIRECCIÓN DEL SINIESTRO: La dirección registrada en el expediente es "{{direccion}}", CP {{cp}}, {{municipio}}.
    PROHIBIDO pedir la dirección desde cero. Al llegar al paso de verificación de dirección, muéstrasela al asegurado exactamente como está registrada y pregúntale únicamente si es correcta o si hay algún dato que corregir (por ejemplo: número de piso, letra, bloque). Si el asegurado la confirma sin cambios, acéptala tal cual y avanza. Si la corrige, usa la versión corregida.
    Ejemplo de mensaje correcto: "La dirección registrada para este siniestro es {{direccion}}, {{municipio}}. ¿Es correcta?"
@@ -454,8 +444,8 @@ Devuelve EXCLUSIVAMENTE un JSON válido con esta estructura:
     "importe_estimado": "",
     "acepta_videollamada": false,
     "preferencia_horaria": "",
-    "estado_expediente": "identificacion|valoracion|agendando|finalizado|escalado_humano",
-    "tipo_respuesta": "normal|pregunta_identidad|peticion_ubicacion|resumen_final|cierre_definitivo",
+    "estado_expediente": "identificacion|valoracion|agendando",
+    "tipo_respuesta": "normal|pregunta_identidad|peticion_ubicacion",
     "idioma_conversacion": "<código ISO 639-1 del idioma del usuario>"
   }
 }`,
@@ -503,7 +493,7 @@ function buildSafeEscalationResponse() {
   return {
     mensaje_para_usuario: '',
     mensaje_entendido: true,
-    datos_extraidos: { estado_expediente: 'escalado_humano' },
+    datos_extraidos: { estado_expediente: 'identificacion', tipo_respuesta: 'normal' },
   };
 }
 

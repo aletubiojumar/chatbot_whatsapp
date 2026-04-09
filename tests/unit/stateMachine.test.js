@@ -13,24 +13,19 @@ describe('canProcess', () => {
     assert.equal(r.reason, 'no_conversation');
   });
 
-  test('status=escalated → bloqueado con respuesta IA diferida', () => {
+  test('status=escalated legacy → permitido', () => {
     const r = canProcess({ status: 'escalated', stage: 'consent' });
-    assert.equal(r.ok, false);
-    assert.equal(r.reason, 'terminal_status');
-    assert.equal(r.aiBehavior, 'reply_once_then_close');
+    assert.equal(r.ok, true);
   });
 
-  test('stage=cerrado → bloqueado en silencio', () => {
+  test('stage=cerrado legacy → permitido', () => {
     const r = canProcess({ status: 'pending', stage: 'cerrado' });
-    assert.equal(r.ok, false);
-    assert.equal(r.reason, 'terminal_stage');
-    assert.equal(r.aiBehavior, 'silent');
+    assert.equal(r.ok, true);
   });
 
-  test('stage=finalizado → bloqueado con una última respuesta IA', () => {
+  test('stage=finalizado legacy → permitido', () => {
     const r = canProcess({ status: 'pending', stage: 'finalizado' });
-    assert.equal(r.ok, false);
-    assert.equal(r.aiBehavior, 'reply_once_then_close');
+    assert.equal(r.ok, true);
   });
 
   test('stage=consent, status=pending → permitido', () => {
@@ -56,16 +51,16 @@ describe('isValidTransition', () => {
     assert.equal(isValidTransition('consent', 'identification'), true);
   });
 
-  test('consent → escalated válido', () => {
-    assert.equal(isValidTransition('consent', 'escalated'), true);
+  test('consent → escalated inválido', () => {
+    assert.equal(isValidTransition('consent', 'escalated'), false);
   });
 
   test('consent → agendando inválido', () => {
     assert.equal(isValidTransition('consent', 'agendando'), false);
   });
 
-  test('finalizado → cerrado válido', () => {
-    assert.equal(isValidTransition('finalizado', 'cerrado'), true);
+  test('finalizado legacy → agendando válido para recuperar conversación', () => {
+    assert.equal(isValidTransition('finalizado', 'agendando'), true);
   });
 
   test('cerrado → cualquier cosa inválido', () => {
@@ -73,22 +68,22 @@ describe('isValidTransition', () => {
     assert.equal(isValidTransition('cerrado', 'finalizado'), false);
   });
 
-  test('escalated → cualquier cosa inválido', () => {
-    assert.equal(isValidTransition('escalated', 'consent'), false);
+  test('escalated legacy → valoracion válido para recuperar conversación', () => {
+    assert.equal(isValidTransition('escalated', 'valoracion'), true);
   });
 
-  test('valoracion → finalizado válido (siniestro sin cita)', () => {
-    assert.equal(isValidTransition('valoracion', 'finalizado'), true);
+  test('valoracion → finalizado inválido', () => {
+    assert.equal(isValidTransition('valoracion', 'finalizado'), false);
   });
 });
 
 // ── TERMINAL_STAGES ──────────────────────────────────────────────────────────
 
 describe('TERMINAL_STAGES', () => {
-  test('cerrado, finalizado, escalated son terminales', () => {
-    assert.ok(TERMINAL_STAGES.has('cerrado'));
-    assert.ok(TERMINAL_STAGES.has('finalizado'));
-    assert.ok(TERMINAL_STAGES.has('escalated'));
+  test('no hay stages terminales activos', () => {
+    assert.equal(TERMINAL_STAGES.has('cerrado'), false);
+    assert.equal(TERMINAL_STAGES.has('finalizado'), false);
+    assert.equal(TERMINAL_STAGES.has('escalated'), false);
   });
 
   test('consent y agendando no son terminales', () => {

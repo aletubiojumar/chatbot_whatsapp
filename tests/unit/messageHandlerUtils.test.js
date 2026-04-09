@@ -289,7 +289,7 @@ describe('looksLikeClosureMessage', () => {
 });
 
 describe('isAllowedTerminalTurn', () => {
-  test('permite cierre definitivo tras confirmar resumen final y preferencia horaria', () => {
+  test('bloquea cualquier intento de cierre terminal', () => {
     assert.equal(isAllowedTerminalTurn({
       currentStage: 'agendando',
       nextStage: 'finalizado',
@@ -297,38 +297,17 @@ describe('isAllowedTerminalTurn', () => {
       lastBotResponseType: 'resumen_final',
       responseType: 'cierre_definitivo',
       preferredSchedule: 'Mañana',
-    }), true);
-  });
-
-  test('bloquea texto de cierre sin resumen previo', () => {
-    assert.equal(isAllowedTerminalTurn({
-      currentStage: 'identification',
-      nextStage: 'finalizado',
-      userText: 'sí',
-      lastBotResponseType: 'normal',
-      responseType: 'normal',
     }), false);
   });
 
-  test('bloquea cierre definitivo si falta preferencia horaria', () => {
-    assert.equal(isAllowedTerminalTurn({
-      currentStage: 'agendando',
-      nextStage: 'finalizado',
-      userText: 'sí',
-      lastBotResponseType: 'resumen_final',
-      responseType: 'cierre_definitivo',
-      preferredSchedule: '',
-    }), false);
-  });
-
-  test('permite escalado cuando el usuario pide una persona', () => {
+  test('también bloquea el escalado humano terminal', () => {
     assert.equal(isAllowedTerminalTurn({
       currentStage: 'identification',
       nextStage: 'escalated',
       userText: 'Quiero hablar con una persona',
       lastBotResponseType: 'normal',
       responseType: 'cierre_definitivo',
-    }), true);
+    }), false);
   });
 });
 
@@ -396,7 +375,7 @@ describe('detectNextRequiredTask', () => {
     }), 'pedir_ubicacion');
   });
 
-  test('si falta preferencia horaria no permite resumir aunque la visita sea presencial', () => {
+  test('si falta preferencia horaria no permite terminar el flujo aunque la visita sea presencial', () => {
     assert.equal(detectNextRequiredTask({
       conversation: { attPerito: 'Matilde - asegurada - 34600000000', danos: '200 €', digital: 'No' },
       lastBotMessage: 'Gracias',
@@ -407,6 +386,24 @@ describe('detectNextRequiredTask', () => {
       locationAlreadyShared: true,
       locationRequestCount: 0,
     }), 'pedir_preferencia_horaria');
+  });
+
+  test('si ya no falta nada, mantiene seguimiento abierto en lugar de resumir o cerrar', () => {
+    assert.equal(detectNextRequiredTask({
+      conversation: {
+        attPerito: 'Matilde - asegurada - 34600000000',
+        danos: '200 €',
+        digital: 'No',
+        horario: 'Tarde',
+      },
+      lastBotMessage: 'Gracias',
+      userText: 'ok',
+      estimateAlreadyKnown: true,
+      extractedDigital: false,
+      preferredSchedule: 'Tarde',
+      locationAlreadyShared: true,
+      locationRequestCount: 2,
+    }), 'seguimiento_abierto');
   });
 });
 
@@ -447,8 +444,8 @@ describe('getNonTerminalAiStateForStage', () => {
 });
 
 describe('getFallbackAiStateForTask', () => {
-  test('resumen final desde identification avanza a valoracion', () => {
-    assert.equal(getFallbackAiStateForTask('identification', 'resumen_final'), 'valoracion');
+  test('seguimiento abierto fuerza agendando para mantener la conversación activa', () => {
+    assert.equal(getFallbackAiStateForTask('identification', 'seguimiento_abierto'), 'agendando');
   });
 
   test('otras tareas conservan el estado no terminal actual', () => {

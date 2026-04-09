@@ -3,15 +3,16 @@
 // ┌──────────────────────────────────────────────────────────────────────┐
 // │  STAGES (etapa del proceso pericial)                                  │
 // │                                                                        │
-// │  consent ──► identification ──► valoracion ──► agendando ──► finalizado│
-// │      └──────────────────────────────────────────┘                      │
-// │      (cualquier stage puede escalar)        escalated (terminal)       │
+// │  consent ──► identification ──► valoracion ──► agendando              │
+// │                                                                        │
+// │  Los stages terminales legacy se conservan solo por compatibilidad,    │
+// │  pero ya no bloquean ni cierran la conversación.                       │
 // └──────────────────────────────────────────────────────────────────────┘
 //
 // STATUSES (estado operativo de la conversación):
 //   pending               → activa, esperando respuesta del usuario
 //   awaiting_continuation → inactividad detectada; esperando confirmación
-//   escalated             → derivada a atención humana (terminal)
+//   paused                → abierta, sin recordatorios automáticos hasta que el usuario escriba
 
 // ── Definición de stages ──────────────────────────────────────────────────
 
@@ -20,32 +21,28 @@ const STAGES = [
   'identification',   // Verificamos datos personales y del siniestro
   'valoracion',       // Recogemos datos del daño (tipo visita, urgencia, estimación)
   'agendando',        // Coordinamos fecha/hora de la visita pericial
-  'finalizado',       // Proceso completado — responde una vez más si el usuario escribe
-  'cerrado',          // Silencio total — TERMINAL definitivo
-  'escalated',        // Derivado a humano — TERMINAL
+  'finalizado',       // Legacy
+  'cerrado',          // Legacy
+  'escalated',        // Legacy
 ];
 
-const TERMINAL_STAGES = new Set(['finalizado', 'cerrado', 'escalated']);
+const TERMINAL_STAGES = new Set();
 
 // ── Transiciones válidas ──────────────────────────────────────────────────
 
 const TRANSITIONS = {
-  consent:        ['identification', 'escalated'],
-  identification: ['valoracion', 'escalated'],
-  valoracion:     ['agendando', 'finalizado', 'escalated'],
-  agendando:      ['finalizado', 'escalated'],
-  finalizado:     ['cerrado'],
-  cerrado:        [],
-  escalated:      [],
+  consent:        ['identification'],
+  identification: ['valoracion'],
+  valoracion:     ['agendando'],
+  agendando:      [],
+  finalizado:     ['identification', 'valoracion', 'agendando'],
+  cerrado:        ['identification', 'valoracion', 'agendando'],
+  escalated:      ['identification', 'valoracion', 'agendando'],
 };
 
 // ── Comportamiento seguro para estados terminales ──────────────────────────
 
-const TERMINAL_BEHAVIOR = {
-  finalizado: 'reply_once_then_close',
-  cerrado:    'silent',
-  escalated:  'reply_once_then_close',
-};
+const TERMINAL_BEHAVIOR = {};
 
 // ── API pública ───────────────────────────────────────────────────────────
 
@@ -61,22 +58,6 @@ const TERMINAL_BEHAVIOR = {
 function canProcess(conversation) {
   if (!conversation) {
     return { ok: false, reason: 'no_conversation' };
-  }
-
-  if (conversation.status === 'escalated') {
-    return {
-      ok: false,
-      reason: 'terminal_status',
-      aiBehavior: TERMINAL_BEHAVIOR.escalated,
-    };
-  }
-
-  if (TERMINAL_STAGES.has(conversation.stage)) {
-    return {
-      ok: false,
-      reason: 'terminal_stage',
-      aiBehavior: TERMINAL_BEHAVIOR[conversation.stage],
-    };
   }
 
   return { ok: true };

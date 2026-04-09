@@ -1,23 +1,22 @@
 // src/bot/reminderScheduler.js — Scheduler unificado
 //
-// Regla de negocio: solo contactamos al asegurado UNA VEZ (mensaje inicial).
+// Regla de negocio: la conversación queda siempre abierta.
 // La columna "Contacto" del Excel es la fuente de verdad:
 //   - Vacío    → pendiente de contactar (sendInitialMessage.js se encarga)
 //   - "En curso" → ya contactado, conversación activa
-//   - "Sí"     → flujo completado y perito virtual desasignado
-//   - "No"     → asegurado no respondió, cerrado sin más contacto
+//   - "Sí"     → ya hubo interacción con el asegurado
 //
 // Gestiona dos escenarios:
 //
 //  A) SIN respuesta al primer mensaje (lastUserMessageAt = null)
-//     → Cuando expira el timer, cierra la conversación SIN enviar ningún
-//       mensaje adicional y marca Contacto = "No".
+//     → Cuando expira el timer, detiene los recordatorios automáticos sin
+//       cerrar la conversación ni enviar mensajes adicionales.
 //
 //  B) INACTIVIDAD a mitad de conversación (lastUserMessageAt existe pero el
 //     usuario lleva demasiado tiempo sin escribir)
 //     → Envía mensajes de inactividad generados por IA cada
 //       INACTIVITY_INTERVAL_MINUTES, hasta INACTIVITY_MAX_ATTEMPTS veces.
-//       Tras agotar los intentos cierra y marca Contacto = "No".
+//       Tras agotar los intentos, pausa los recordatorios sin cerrar.
 //
 //  Los mensajes solo se envían dentro del horario L-V BUSINESS_HOURS_START–BUSINESS_HOURS_END.
 //  La limpieza del Excel se ejecuta en cada ciclo independientemente del horario.
@@ -25,11 +24,9 @@
 require('dotenv').config();
 const conversationManager = require('./conversationManager');
 const adapter             = require('../channels/whatsappAdapter');
-const { buildInitialTemplateText } = require('./templateSender');
-const { triggerEncargoSync } = require('./peritolineAutoSync');
 const { isBusinessHours, cleanOldRows } = require('../utils/excelManager');
 const { procesarConIA }   = require('../ai/aiModel');
-const { generateConversationPdf, cleanOldPdfs, cleanOldDebugLogs } = require('../utils/pdfGenerator');
+const { cleanOldPdfs, cleanOldDebugLogs } = require('../utils/pdfGenerator');
 const fileLogger          = require('../utils/fileLogger');
 
 const CHECK_MINUTES           = Number(process.env.SCHEDULER_CHECK_MINUTES         || 15);
@@ -77,7 +74,6 @@ async function runChecks() {
 
   const now           = Date.now();
   const enHorario     = isBusinessHours();
-  const TERMINAL      = new Set(['cerrado', 'finalizado', 'escalated']);
   const conversaciones = (await conversationManager.getAllConversations())
     .filter(c => c.status === 'pending' || c.status === 'awaiting_location');
 
@@ -97,9 +93,6 @@ async function runChecks() {
       continue; // nunca aplicar lógica A/B a estas conversaciones
     }
 
-    // Saltar conversaciones en stage terminal (cerrado, finalizado, escalated)
-    if (TERMINAL.has(conv.stage)) continue;
-
     // nextReminderAt aún no ha llegado
     if (conv.nextReminderAt && conv.nextReminderAt > now) continue;
 
@@ -116,8 +109,7 @@ async function runChecks() {
 
     if (!usuarioRespondio) {
       // ── Escenario A: sin respuesta al primer mensaje ──────────────────────
-      // Regla: solo contactamos una vez. Cerrar sin enviar ningún mensaje más.
-      await finalizarSinMensaje(waId, nexp);
+      await pausarSeguimiento(waId, nexp, 'sin_respuesta_inicial');
     } else {
       // ── Escenario B: inactividad a mitad de conversación ──────────────────
       await handleInactivity(conv, now);
@@ -125,18 +117,19 @@ async function runChecks() {
   }
 }
 
-async function finalizarSinMensaje(waId, nexp) {
+async function pausarSeguimiento(waId, nexp, motivo, extraPatch = {}) {
   try {
     await conversationManager.createOrUpdateConversation(waId, {
-      stage:    'cerrado',
-      contacto: 'No',
+      status:          'paused',
+      nextReminderAt:  null,
+      locationStandbyUntil: 0,
+      ...extraPatch,
     });
-    triggerEncargoSync(nexp, 'inactividad_contacto_no', '[IA] Asegurado no responde', false, true);
-    console.log(`📭 Sin respuesta, cerrado sin recontactar: nexp=${nexp}`);
-    fileLogger.writeLog(nexp, 'INFO', `Cerrado por no respuesta (sin mensaje adicional) waId=${waId}`);
+    console.log(`⏸️ Seguimiento automático pausado (${motivo}): nexp=${nexp}`);
+    fileLogger.writeLog(nexp, 'INFO', `Seguimiento pausado (${motivo}) waId=${waId}`);
   } catch (err) {
-    console.error(`❌ Error cerrando sin mensaje ${waId}:`, err.message);
-    fileLogger.writeLog(nexp, 'ERROR', `Error cerrando sin mensaje waId=${waId}: ${err.message}`);
+    console.error(`❌ Error pausando seguimiento ${waId}:`, err.message);
+    fileLogger.writeLog(nexp, 'ERROR', `Error pausando seguimiento waId=${waId}: ${err.message}`);
   }
 }
 
@@ -145,7 +138,10 @@ async function handleInactivity(conv, now) {
   const intentos = conv.inactivityAttempts || 0;
 
   if (intentos >= INACTIVITY_MAX) {
-    await finalizar(waId, nexp, '[IA] Asegurado deja de responder');
+    await pausarSeguimiento(waId, nexp, 'inactividad_maxima', {
+      inactivityAttempts: intentos,
+      lastReminderAt: now,
+    });
     return;
   }
 
@@ -190,7 +186,10 @@ async function handleInactivity(conv, now) {
     });
     console.log(`✅ Mensaje de inactividad enviado (${siguiente}/${INACTIVITY_MAX}): "${msgInactividad}"`);
     if (siguiente >= INACTIVITY_MAX) {
-      await finalizar(waId, nexp, '[IA] Asegurado deja de responder');
+      await pausarSeguimiento(waId, nexp, 'inactividad_maxima', {
+        inactivityAttempts: siguiente,
+        lastReminderAt: now,
+      });
     }
   } catch (err) {
     console.error(`❌ Error enviando inactividad ${waId}:`, err.message);
@@ -203,83 +202,6 @@ async function handleLocationStandbyExpired(conv) {
   try {
     const mensajes    = await conversationManager.getMensajes(waId);
     const userData    = conv?.userData || {};
-    const isClosed    = ['cerrado', 'finalizado', 'escalated'].includes(conv.stage);
-
-    // Solo enviar mensaje si la conversación aún no está cerrada
-    if (!isClosed) {
-      const historial = mensajes.map(m => ({
-        role:  m.direction === 'in' ? 'user' : 'model',
-        parts: [{ text: m.text }],
-      }));
-      const valoresExcel = {
-        saludo:        new Date().getHours() < 12 ? 'Buenos días' : 'Buenas tardes',
-        aseguradora:   userData.aseguradora   || 'la aseguradora',
-        nexp,
-        causa:         userData.causa         || '',
-        observaciones: userData.observaciones || '',
-        nombre:        userData.nombre        || 'el titular',
-        direccion:     userData.direccion     || '',
-        cp:            userData.cp            || '',
-        municipio:     userData.municipio     || '',
-      };
-      const respuestaIA = await procesarConIA(historial, '[SISTEMA: UBICACION_STANDBY_EXPIRADA]', '', valoresExcel);
-      const msgCierre = String(respuestaIA?.mensaje_para_usuario || '').trim();
-      if (msgCierre) {
-        await adapter.sendText(waId, msgCierre);
-      }
-
-      const mensajesConCierre = [
-        ...mensajes,
-        ...(msgCierre ? [{ direction: 'out', text: msgCierre, timestamp: new Date().toISOString() }] : []),
-      ];
-      await conversationManager.createOrUpdateConversation(waId, {
-        stage:               'cerrado',
-        status:              'pending',
-        contacto:            'Sí',
-        locationStandbyUntil: 0,
-        mensajes:            mensajesConCierre,
-      });
-
-      generateConversationPdf(nexp, userData, mensajesConCierre, {
-        stage:     'cerrado',
-        contacto:  'Sí',
-        attPerito: conv?.attPerito,
-        danos:     conv?.danos,
-        digital:   conv?.digital,
-        horario:   conv?.horario,
-      }).catch(e => {
-        console.error(`❌ Error generando PDF standby nexp=${nexp}:`, e.message);
-        fileLogger.writeLog(nexp, 'ERROR', `Error generando PDF standby: ${e.message}`);
-      });
-    } else {
-      // Conversación ya cerrada: solo limpiar el flag de standby
-      await conversationManager.createOrUpdateConversation(waId, { status: 'pending', locationStandbyUntil: 0 });
-    }
-
-    triggerEncargoSync(nexp, 'ubicacion_pendiente_expirada', '[IA] Ubicación pendiente (Sin coordenadas)', false, true);
-    console.log(`📍 Standby ubicación expirado (${LOCATION_STANDBY_HOURS}h): nexp=${nexp}`);
-    fileLogger.writeLog(nexp, 'INFO', `Standby ubicación expirado waId=${waId} isClosed=${isClosed}`);
-  } catch (err) {
-    console.error(`❌ Error en standby ubicación ${waId}:`, err.message);
-    fileLogger.writeLog(nexp, 'ERROR', `Error standby ubicación waId=${waId}: ${err.message}`);
-  }
-}
-
-async function finalizar(waId, nexp, anotacion = '') {
-  try {
-    const conv = await conversationManager.getConversation(waId);
-    let mensajes = await conversationManager.getMensajes(waId);
-    const userData = conv?.userData || {};
-
-    // Si el historial está vacío, reconstruir el mensaje inicial de la plantilla para
-    // que siempre aparezca en el PDF aunque el estado no se haya persistido correctamente.
-    if (mensajes.length === 0 && userData.aseguradora && nexp) {
-      mensajes = [{
-        direction: 'out',
-        text:      buildInitialTemplateText({ aseguradora: userData.aseguradora, nexp, causa: userData.causa || userData.observaciones || '' }),
-        timestamp: null,
-      }];
-    }
     const historial = mensajes.map(m => ({
       role:  m.direction === 'in' ? 'user' : 'model',
       parts: [{ text: m.text }],
@@ -295,38 +217,26 @@ async function finalizar(waId, nexp, anotacion = '') {
       cp:            userData.cp            || '',
       municipio:     userData.municipio     || '',
     };
-    const respuestaIA = await procesarConIA(historial, '[SISTEMA: INACTIVIDAD_FINAL]', '', valoresExcel);
-    const msgCierre = respuestaIA.mensaje_para_usuario;
-    await adapter.sendText(waId, msgCierre);
+    const respuestaIA = await procesarConIA(historial, '[SISTEMA: UBICACION_STANDBY_EXPIRADA]', '', valoresExcel);
+    const msgRecordatorio = String(respuestaIA?.mensaje_para_usuario || '').trim();
+    if (msgRecordatorio) {
+      await adapter.sendText(waId, msgRecordatorio);
+    }
 
-    // Incluir el mensaje de cierre en el historial antes de guardar y generar el PDF
-    const mensajesConCierre = [
+    const mensajesActualizados = [
       ...mensajes,
-      { direction: 'out', text: msgCierre, timestamp: new Date().toISOString() },
+      ...(msgRecordatorio ? [{ direction: 'out', text: msgRecordatorio, timestamp: new Date().toISOString() }] : []),
     ];
-    await conversationManager.createOrUpdateConversation(waId, {
-      stage:    'cerrado',
-      contacto: 'No',
-      mensajes: mensajesConCierre,
+    await pausarSeguimiento(waId, nexp, 'ubicacion_standby_expirada', {
+      mensajes: mensajesActualizados,
+      lastReminderAt: Date.now(),
     });
-    triggerEncargoSync(nexp, 'inactividad_contacto_no', anotacion, false, true);
-    console.log(`🚨 Escalado por inactividad: nexp=${nexp}`);
 
-    // Generar PDF de transcripción al cerrar por inactividad
-    generateConversationPdf(nexp, userData, mensajesConCierre, {
-      stage:     'cerrado',
-      contacto:  'No',
-      attPerito: conv?.attPerito,
-      danos:     conv?.danos,
-      digital:   conv?.digital,
-      horario:   conv?.horario,
-    }).catch(e => {
-      console.error(`❌ Error generando PDF nexp=${nexp}:`, e.message);
-      fileLogger.writeLog(nexp, 'ERROR', `Error generando PDF: ${e.message}`);
-    });
+    console.log(`📍 Standby ubicación expirado (${LOCATION_STANDBY_HOURS}h): nexp=${nexp}`);
+    fileLogger.writeLog(nexp, 'INFO', `Standby ubicación expirado waId=${waId}`);
   } catch (err) {
-    console.error(`❌ Error finalizando por inactividad ${waId}:`, err.message);
-    fileLogger.writeLog(nexp, 'ERROR', `Error finalizando por inactividad waId=${waId}: ${err.message}`);
+    console.error(`❌ Error en standby ubicación ${waId}:`, err.message);
+    fileLogger.writeLog(nexp, 'ERROR', `Error standby ubicación waId=${waId}: ${err.message}`);
   }
 }
 
@@ -342,9 +252,9 @@ function startScheduler() {
   console.log('║           SCHEDULER UNIFICADO INICIADO                    ║');
   console.log('╚════════════════════════════════════════════════════════════╝');
   console.log(`   ⏱️  Verificación cada: ${CHECK_MINUTES} min`);
-  console.log(`   📩 Sin respuesta:   cierre silencioso (sin recontactar)`);
+  console.log(`   📩 Sin respuesta:   pausa recordatorios sin cerrar`);
   console.log(`   💤 Inactividad:     aviso cada ${INACTIVITY_MINUTES}min × ${INACTIVITY_MAX} veces`);
-  console.log(`   📍 Standby ubic.:   expiración a las ${LOCATION_STANDBY_HOURS}h sin GPS`);
+  console.log(`   📍 Standby ubic.:   recordatorio y pausa a las ${LOCATION_STANDBY_HOURS}h sin GPS`);
   console.log(`   🕐 Envíos: L-V ${process.env.BUSINESS_HOURS_START || 9}:00–${process.env.BUSINESS_HOURS_END || 20}:00\n`);
 
   runChecks().catch(e => console.error('❌ Error en verificación inicial:', e.message));

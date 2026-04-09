@@ -150,6 +150,7 @@ async function createOrUpdateConversation(waId, data = {}) {
 
 async function recordUserMessage(waId) {
   return createOrUpdateConversation(waId, {
+    status:             'pending',
     lastMessageAt:      Date.now(),
     lastUserMessageAt:  Date.now(),
     inactivityAttempts: 0,
