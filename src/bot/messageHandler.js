@@ -129,6 +129,10 @@ function normalizeSchedulePreference(value) {
   return '';
 }
 
+function hasSchedulePreference(value) {
+  return Boolean(normalizeSchedulePreference(value));
+}
+
 function shouldAssumeDigitalAcceptance({ extractedDigital, existingDigital, preferredSchedule }) {
   if (typeof extractedDigital === 'boolean') return extractedDigital;
   if (String(existingDigital || '').trim().toLowerCase() === 'no') return false;
@@ -174,12 +178,20 @@ function looksLikeClosureMessage(text) {
   );
 }
 
-function isAllowedTerminalTurn({ currentStage, nextStage, userText, lastBotResponseType, responseType }) {
+function isAllowedTerminalTurn({
+  currentStage,
+  nextStage,
+  userText,
+  lastBotResponseType,
+  responseType,
+  preferredSchedule = '',
+}) {
   if (responseType !== 'cierre_definitivo') return false;
 
   if (nextStage === 'finalizado') {
     // La transición a finalizado solo es legítima si el stage actual lo permite Y el resumen fue enviado
     return canApplyStageTransition(currentStage, 'finalizado') &&
+      hasSchedulePreference(preferredSchedule) &&
       lastBotResponseType === 'resumen_final' &&
       isAffirmativeAck(userText);
   }
@@ -226,12 +238,7 @@ function detectNextRequiredTask({
     existingDigital === 'No';
   if (!digitalKnown) return 'evaluar_digital';
 
-  const effectiveDigital = shouldAssumeDigitalAcceptance({
-    extractedDigital,
-    existingDigital,
-    preferredSchedule,
-  });
-  if (effectiveDigital && !normalizeSchedulePreference(preferredSchedule || conversation?.horario)) {
+  if (!hasSchedulePreference(preferredSchedule || conversation?.horario)) {
     return 'pedir_preferencia_horaria';
   }
 
@@ -864,7 +871,12 @@ async function processMessage(waId, messageObj) {
     // se reemplaza INMEDIATAMENTE por la pregunta hardcoded de la tarea pendiente.
     // No se reintenta la IA: la decisión es determinista y no depende del modelo.
     const isLegitimateClose = isAllowedTerminalTurn({
-      currentStage, nextStage, userText: text, lastBotResponseType, responseType,
+      currentStage,
+      nextStage,
+      userText: text,
+      lastBotResponseType,
+      responseType,
+      preferredSchedule,
     });
     const aiWantsToClose =
       (nextStage === 'finalizado' || nextStage === 'escalated') ||

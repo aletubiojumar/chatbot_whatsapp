@@ -289,6 +289,7 @@ function buildPromptFinal(valoresExcel) {
 14. VIDEOPERITACIÓN: solo explica qué es y cómo funciona si el usuario expresa dudas o lo pide. Si no hay dudas, pregunta directamente disponibilidad (mañana o tarde).
 15. FORMATO DE SALIDA: responde siempre en texto plano. Para listas usa líneas con viñetas "•". Nunca uses etiquetas HTML.
 16. CAMPO "preferencia_horaria": rellénalo SOLO cuando el asegurado exprese claramente su preferencia horaria para la visita del perito. Usa "mañana" o "tarde". Déjalo vacío ("") si aún no lo ha indicado.
+16.b CIERRE LIGADO A PREFERENCIA HORARIA: no puedes emitir "resumen_final" ni "cierre_definitivo" mientras "preferencia_horaria" siga vacía. Antes de cerrar, el asegurado debe haber indicado claramente "mañana" o "tarde".
 17. CAMPO "estado_expediente": debes rellenarlo en cada respuesta siguiendo estos criterios:
    - "identificacion": mientras estás verificando identidad, datos del siniestro o dirección.
    - "valoracion": cuando estás recogiendo información sobre los daños, estimación económica o idoneidad para videoperitación.

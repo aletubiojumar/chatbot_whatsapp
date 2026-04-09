@@ -289,13 +289,14 @@ describe('looksLikeClosureMessage', () => {
 });
 
 describe('isAllowedTerminalTurn', () => {
-  test('permite cierre definitivo tras confirmar resumen final', () => {
+  test('permite cierre definitivo tras confirmar resumen final y preferencia horaria', () => {
     assert.equal(isAllowedTerminalTurn({
-      currentStage: 'valoracion',
+      currentStage: 'agendando',
       nextStage: 'finalizado',
       userText: 'sí',
       lastBotResponseType: 'resumen_final',
       responseType: 'cierre_definitivo',
+      preferredSchedule: 'Mañana',
     }), true);
   });
 
@@ -306,6 +307,17 @@ describe('isAllowedTerminalTurn', () => {
       userText: 'sí',
       lastBotResponseType: 'normal',
       responseType: 'normal',
+    }), false);
+  });
+
+  test('bloquea cierre definitivo si falta preferencia horaria', () => {
+    assert.equal(isAllowedTerminalTurn({
+      currentStage: 'agendando',
+      nextStage: 'finalizado',
+      userText: 'sí',
+      lastBotResponseType: 'resumen_final',
+      responseType: 'cierre_definitivo',
+      preferredSchedule: '',
     }), false);
   });
 
@@ -368,15 +380,33 @@ describe('detectNextRequiredTask', () => {
 
   test('si falta ubicación tras completar lo demás, fuerza ubicación', () => {
     assert.equal(detectNextRequiredTask({
+      conversation: {
+        attPerito: 'Matilde - asegurada - 34600000000',
+        danos: '200 €',
+        digital: 'No',
+        horario: 'Mañana',
+      },
+      lastBotMessage: 'Gracias',
+      userText: 'ok',
+      estimateAlreadyKnown: true,
+      extractedDigital: false,
+      preferredSchedule: 'Mañana',
+      locationAlreadyShared: false,
+      locationRequestCount: 0,
+    }), 'pedir_ubicacion');
+  });
+
+  test('si falta preferencia horaria no permite resumir aunque la visita sea presencial', () => {
+    assert.equal(detectNextRequiredTask({
       conversation: { attPerito: 'Matilde - asegurada - 34600000000', danos: '200 €', digital: 'No' },
       lastBotMessage: 'Gracias',
       userText: 'ok',
       estimateAlreadyKnown: true,
       extractedDigital: false,
       preferredSchedule: '',
-      locationAlreadyShared: false,
+      locationAlreadyShared: true,
       locationRequestCount: 0,
-    }), 'pedir_ubicacion');
+    }), 'pedir_preferencia_horaria');
   });
 });
 
