@@ -858,111 +858,51 @@ async function processMessage(waId, messageObj) {
       locationRequestCount,
     });
 
-    for (let guardAttempt = 0; guardAttempt < 3; guardAttempt++) {
-      const shouldRetryBlockedTerminal =
-        Boolean(nextStage) &&
-        (shouldBlockEarlyTerminalStage({
-          currentStage,
-          nextStage,
-          userText: text,
-          hasOutgoingMessage,
-        }) ||
-        ((nextStage === 'finalizado' || nextStage === 'escalated') &&
-          !canApplyStageTransition(currentStage, nextStage)));
+    // ── Bloqueo determinista de cierres prematuros ────────────────────────────
+    // Si la IA intenta cerrar la conversación sin que sea legítimo (sin resumen
+    // confirmado, desde etapa no permitida, o con texto equivalente a cierre),
+    // se reemplaza INMEDIATAMENTE por la pregunta hardcoded de la tarea pendiente.
+    // No se reintenta la IA: la decisión es determinista y no depende del modelo.
+    const isLegitimateClose = isAllowedTerminalTurn({
+      currentStage, nextStage, userText: text, lastBotResponseType, responseType,
+    });
+    const aiWantsToClose =
+      (nextStage === 'finalizado' || nextStage === 'escalated') ||
+      (hasOutgoingMessage && looksLikeClosureMessage(respuestaIA.mensaje_para_usuario));
 
-      const shouldRetryClosureLikeMessage =
-        hasOutgoingMessage &&
-        looksLikeClosureMessage(respuestaIA.mensaje_para_usuario) &&
-        !isAllowedTerminalTurn({
-          currentStage,
-          nextStage,
-          userText: text,
-          lastBotResponseType,
-          responseType,
-        });
+    if (aiWantsToClose && !isLegitimateClose) {
+      const fallbackAiState = getFallbackAiStateForTask(currentStage, nextRequiredTask);
+      const summaryFallbackMessage = nextRequiredTask === 'resumen_final'
+        ? buildSummaryFallbackMessage({
+            conversation,
+            valoresExcel,
+            lastBotMessage,
+            userText: text,
+            estimateFromCurrent: estimateFromCurrent || respuestaIA.datos_extraidos?.importe_estimado || '',
+            preferredSchedule,
+            locationAlreadyShared,
+            extractedDigital: respuestaIA.datos_extraidos?.acepta_videollamada,
+            extractedAttendeeName: respuestaIA.datos_extraidos?.nombre_contacto,
+            extractedAttendeeRelation: respuestaIA.datos_extraidos?.relacion_contacto || relationFromCurrent,
+          })
+        : '';
+      const fallbackMessage = summaryFallbackMessage || TASK_FALLBACK_MESSAGES[nextRequiredTask];
+      const fallbackResponseType = nextRequiredTask === 'resumen_final' ? 'resumen_final' : 'normal';
 
-      if (!shouldRetryBlockedTerminal && !shouldRetryClosureLikeMessage) break;
-
-      const extraContext = shouldRetryBlockedTerminal
-        ? `${buildBlockedTerminalRetryContext(currentStage)}\n[SISTEMA: TAREA_OBLIGATORIA task=${nextRequiredTask}]`
-        : `${buildBlockedClosureRetryContext(currentStage, nextRequiredTask)}\n[SISTEMA: TAREA_OBLIGATORIA task=${nextRequiredTask}]`;
-
-      const guardedResponse = await requestAIResponse({
-        historial,
-        mensajeUsuario: text,
-        contextoSistema,
-        valoresExcel,
-        extraContext,
-      });
-      if (!guardedResponse.mensaje_para_usuario) break;
-
-      respuestaIA = guardedResponse;
-      responseType = String(respuestaIA.datos_extraidos?.tipo_respuesta || 'normal').trim() || 'normal';
-      hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
-      nextStage = ESTADO_IA_TO_STAGE[respuestaIA.datos_extraidos?.estado_expediente];
-      preferredSchedule = normalizeSchedulePreference(
-        respuestaIA.datos_extraidos?.preferencia_horaria || conversation.horario || ''
-      );
-      nextRequiredTask = detectNextRequiredTask({
-        conversation,
-        lastBotMessage,
-        userText: text,
-        estimateAlreadyKnown,
-        extractedDigital: respuestaIA.datos_extraidos?.acepta_videollamada,
-        extractedAttendeeName: respuestaIA.datos_extraidos?.nombre_contacto,
-        preferredSchedule,
-        locationAlreadyShared,
-        locationRequestCount,
-      });
-
-      if (shouldRetryBlockedTerminal) {
-        L.warn(`⚠️  IA intentó cerrar/escalar prematuramente desde stage=${currentStage}; intento ${guardAttempt + 1}/3 forzando tarea=${nextRequiredTask}`);
-      } else {
-        L.warn(`⚠️  IA intentó cerrar con texto equivalente a cierre desde stage=${currentStage}; intento ${guardAttempt + 1}/3 forzando tarea=${nextRequiredTask}`);
+      if (fallbackMessage) {
+        L.warn(`⚠️  Cierre prematuro bloqueado (stage=${currentStage}, nextStage=${nextStage || '—'}, tarea=${nextRequiredTask}) — fallback aplicado`);
+        respuestaIA = {
+          mensaje_para_usuario: fallbackMessage,
+          mensaje_entendido: true,
+          datos_extraidos: {
+            estado_expediente: fallbackAiState,
+            tipo_respuesta: fallbackResponseType,
+          },
+        };
+        responseType = fallbackResponseType;
+        hasOutgoingMessage = true;
+        nextStage = ESTADO_IA_TO_STAGE[fallbackAiState];
       }
-    }
-
-    // Si el guard agotó los 3 intentos y la IA sigue con cierre prematuro, usar fallback hardcoded
-    // Transición de stage todavía inválida tras 3 reintentos (ej: identification→finalizado)
-    const guardExhaustedInvalidTransition =
-      Boolean(nextStage) &&
-      (shouldBlockEarlyTerminalStage({ currentStage, nextStage, userText: text, hasOutgoingMessage }) ||
-       ((nextStage === 'finalizado' || nextStage === 'escalated') &&
-         !canApplyStageTransition(currentStage, nextStage)));
-    // Mensaje de cierre no permitido según texto (puede fallar si isAllowedTerminalTurn usa lastBotResponseType incorrecto)
-    const guardExhaustedUnallowedClosure =
-      looksLikeClosureMessage(respuestaIA.mensaje_para_usuario) &&
-      !isAllowedTerminalTurn({ currentStage, nextStage, userText: text, lastBotResponseType, responseType });
-    const fallbackAiState = getFallbackAiStateForTask(currentStage, nextRequiredTask);
-    const summaryFallbackMessage = nextRequiredTask === 'resumen_final'
-      ? buildSummaryFallbackMessage({
-          conversation,
-          valoresExcel,
-          lastBotMessage,
-          userText: text,
-          estimateFromCurrent: estimateFromCurrent || respuestaIA.datos_extraidos?.importe_estimado || '',
-          preferredSchedule,
-          locationAlreadyShared,
-          extractedDigital: respuestaIA.datos_extraidos?.acepta_videollamada,
-          extractedAttendeeName: respuestaIA.datos_extraidos?.nombre_contacto,
-          extractedAttendeeRelation: respuestaIA.datos_extraidos?.relacion_contacto || relationFromCurrent,
-        })
-      : '';
-    const fallbackMessage = summaryFallbackMessage || TASK_FALLBACK_MESSAGES[nextRequiredTask];
-    const fallbackResponseType = nextRequiredTask === 'resumen_final' ? 'resumen_final' : 'normal';
-    if ((guardExhaustedInvalidTransition || guardExhaustedUnallowedClosure) && fallbackMessage) {
-      L.warn(`⚠️  Guard agotado: IA persistió en cierre (invalidTransition=${guardExhaustedInvalidTransition}) tras 3 intentos. Fallback hardcoded para tarea=${nextRequiredTask}`);
-      respuestaIA = {
-        mensaje_para_usuario: fallbackMessage,
-        mensaje_entendido: true,
-        datos_extraidos: {
-          estado_expediente: fallbackAiState,
-          tipo_respuesta: fallbackResponseType,
-        },
-      };
-      responseType = fallbackResponseType;
-      hasOutgoingMessage = true;
-      nextStage = ESTADO_IA_TO_STAGE[fallbackAiState];
     }
 
     let aiWantsToSummarizeOrClose =

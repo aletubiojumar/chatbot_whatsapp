@@ -137,6 +137,20 @@ app.post('/webhook', async (req, res) => {
 
   const body = req.body;
 
+  // Log crudo de TODO webhook entrante, antes de cualquier filtro
+  {
+    const _rawObj      = body?.object || '(sin object)';
+    const _rawValue    = body?.entry?.[0]?.changes?.[0]?.value;
+    const _rawMsgs     = _rawValue?.messages;
+    const _rawStatuses = _rawValue?.statuses;
+    const _rawFrom     = _rawMsgs?.[0]?.from || '—';
+    const _rawMsgId    = _rawMsgs?.[0]?.id   || '—';
+    const _rawText     = _rawMsgs?.[0]?.text?.body?.slice(0, 40) || '—';
+    const _rawType     = _rawMsgs?.[0]?.type
+      || (_rawStatuses ? `status(${_rawStatuses?.[0]?.status})` : '—');
+    console.log(`🔔 WEBHOOK object=${_rawObj} type=${_rawType} from=${log.maskPhone(_rawFrom)} msgId=${_rawMsgId} text="${_rawText}"`);
+  }
+
   // Ignorar eventos que no sean de whatsapp_business_account
   if (body?.object !== 'whatsapp_business_account') return;
 
