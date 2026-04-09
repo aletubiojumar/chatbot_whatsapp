@@ -52,6 +52,7 @@ async function readStateByWaId(waId) {
     const { Item } = await ddb().send(new GetCommand({
       TableName: TABLE_NAME,
       Key: { waId: String(waId) },
+      ConsistentRead: true,
     }));
     return Item ? deserialize(Item) : null;
   } catch (err) {
@@ -62,7 +63,10 @@ async function readStateByWaId(waId) {
 
 async function readAllStates() {
   try {
-    const { Items = [] } = await ddb().send(new ScanCommand({ TableName: TABLE_NAME }));
+    const { Items = [] } = await ddb().send(new ScanCommand({
+      TableName: TABLE_NAME,
+      ConsistentRead: true,
+    }));
     return Items.map(deserialize);
   } catch (err) {
     console.error('❌ DynamoDB readAllStates:', err.message);
