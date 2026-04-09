@@ -1154,8 +1154,7 @@ async function processMessage(waId, messageObj) {
       !isLegitimateClose &&
       currentStage !== 'agendando' &&
       currentStage !== 'finalizado' &&
-      currentStage !== 'escalated' &&
-      nextRequiredTask !== 'seguimiento_abierto'
+      currentStage !== 'escalated'
     ) {
       const forcedTaskResponse = buildForcedTaskResponse(nextRequiredTask, {
         valoresExcel,
