@@ -27,7 +27,15 @@ const {
   getFallbackAiStateForTask,
   buildSummaryFallbackMessage,
   buildForcedConsentConfirmationResponse,
+  buildForcedAddressConfirmationResponse,
+  buildForcedAddressCorrectionResponse,
   buildForcedAttendeeConfirmationResponse,
+  buildForcedLocationClosureResponse,
+  isConsentPrompt,
+  isAddressConfirmationPrompt,
+  isAddressCorrectionPrompt,
+  isPlainAddressRejection,
+  hasMeaningfulAddressCorrection,
 } = _test;
 
 // ── detectEconomicEstimate ───────────────────────────────────────────────────
@@ -346,7 +354,9 @@ describe('detectNextRequiredTask', () => {
 
   test('si AT. Perito ya está y falta estimación, fuerza estimación', () => {
     assert.equal(detectNextRequiredTask({
-      conversation: { attPerito: 'Matilde - asegurada - 34600000000' },
+      conversation: { attPerito: 'Matilde - asegurada - 34600000000', addressStatus: 'confirmed' },
+      currentStage: 'identification',
+      addressStatus: 'confirmed',
       lastBotMessage: 'Según nos consta, el siniestro es por daños por agua. ¿Es correcto?',
       userText: 'sí',
       estimateAlreadyKnown: false,
@@ -357,14 +367,38 @@ describe('detectNextRequiredTask', () => {
     }), 'pedir_estimacion');
   });
 
-  test('si falta ubicación tras completar lo demás, fuerza ubicación', () => {
+  test('si la dirección aún no está validada, no deja pedir ubicación y fuerza confirmación de dirección', () => {
     assert.equal(detectNextRequiredTask({
       conversation: {
         attPerito: 'Matilde - asegurada - 34600000000',
         danos: '200 €',
         digital: 'No',
         horario: 'Mañana',
+        addressStatus: 'pending',
       },
+      currentStage: 'identification',
+      addressStatus: 'pending',
+      lastBotMessage: '¿Hablo con Matilde?',
+      userText: 'sí',
+      estimateAlreadyKnown: true,
+      extractedDigital: false,
+      preferredSchedule: 'Mañana',
+      locationAlreadyShared: false,
+      locationRequestCount: 0,
+    }), 'confirmar_direccion');
+  });
+
+  test('si falta ubicación al final y la dirección ya está validada, la pide una sola vez', () => {
+    assert.equal(detectNextRequiredTask({
+      conversation: {
+        attPerito: 'Matilde - asegurada - 34600000000',
+        danos: '200 €',
+        digital: 'No',
+        horario: 'Mañana',
+        addressStatus: 'confirmed',
+      },
+      currentStage: 'agendando',
+      addressStatus: 'confirmed',
       lastBotMessage: 'Gracias',
       userText: 'ok',
       estimateAlreadyKnown: true,
@@ -377,7 +411,9 @@ describe('detectNextRequiredTask', () => {
 
   test('si falta preferencia horaria no permite terminar el flujo aunque la visita sea presencial', () => {
     assert.equal(detectNextRequiredTask({
-      conversation: { attPerito: 'Matilde - asegurada - 34600000000', danos: '200 €', digital: 'No' },
+      conversation: { attPerito: 'Matilde - asegurada - 34600000000', danos: '200 €', digital: 'No', addressStatus: 'confirmed' },
+      currentStage: 'valoracion',
+      addressStatus: 'confirmed',
       lastBotMessage: 'Gracias',
       userText: 'ok',
       estimateAlreadyKnown: true,
@@ -395,7 +431,10 @@ describe('detectNextRequiredTask', () => {
         danos: '200 €',
         digital: 'No',
         horario: 'Tarde',
+        addressStatus: 'corrected',
       },
+      currentStage: 'agendando',
+      addressStatus: 'corrected',
       lastBotMessage: 'Gracias',
       userText: 'ok',
       estimateAlreadyKnown: true,
@@ -508,5 +547,92 @@ describe('buildForcedConsentConfirmationResponse', () => {
     assert.equal(response.mensaje_para_usuario, '¿Hablo con LINARES ALES, MATILDE ASCENSION?');
     assert.equal(response.datos_extraidos.estado_expediente, 'identificacion');
     assert.equal(response.datos_extraidos.tipo_respuesta, 'pregunta_identidad');
+  });
+});
+
+describe('buildForcedAddressConfirmationResponse', () => {
+  test('pregunta exactamente por la dirección del Excel', () => {
+    const response = buildForcedAddressConfirmationResponse({
+      valoresExcel: { direccion: 'Calle Gerald Brenan 49B', municipio: 'Málaga' },
+    });
+
+    assert.equal(
+      response.mensaje_para_usuario,
+      'La dirección registrada para este siniestro es Calle Gerald Brenan 49B, Málaga. ¿Es correcta?'
+    );
+    assert.equal(response.datos_extraidos.estado_expediente, 'identificacion');
+  });
+});
+
+describe('buildForcedAddressCorrectionResponse', () => {
+  test('pide la corrección y menciona la ubicación como alternativa', () => {
+    const response = buildForcedAddressCorrectionResponse();
+
+    assert.match(response.mensaje_para_usuario, /dirección correcta/i);
+    assert.match(response.mensaje_para_usuario, /ubicación del inmueble/i);
+    assert.equal(response.datos_extraidos.tipo_respuesta, 'normal');
+  });
+});
+
+describe('buildForcedLocationClosureResponse', () => {
+  test('cierra sin derivar a equipo humano ni reutilizar el mensaje problemático', () => {
+    const response = buildForcedLocationClosureResponse();
+
+    assert.match(response.mensaje_para_usuario, /no desea compartir la ubicación/i);
+    assert.doesNotMatch(response.mensaje_para_usuario, /nuestro equipo/i);
+    assert.equal(response.datos_extraidos.tipo_respuesta, 'normal');
+  });
+});
+
+describe('isConsentPrompt', () => {
+  test('detecta el template inicial como petición de consentimiento', () => {
+    assert.equal(
+      isConsentPrompt('Buenos días.\n\nPara poder realizar las primeras gestiones, necesitamos confirmar si desea continuar la conversación por este medio.'),
+      true
+    );
+  });
+
+  test('detecta la variante de gestión por este medio', () => {
+    assert.equal(
+      isConsentPrompt('¿Desea continuar la gestión por este medio?'),
+      true
+    );
+  });
+
+  test('no marca preguntas no relacionadas', () => {
+    assert.equal(
+      isConsentPrompt('¿Hablo con LINARES ALES, MATILDE ASCENSION?'),
+      false
+    );
+  });
+});
+
+describe('address helpers', () => {
+  test('detecta la pregunta de confirmación de dirección', () => {
+    assert.equal(
+      isAddressConfirmationPrompt(
+        'Entendido. La dirección registrada para este siniestro es Calle Gerald Brenan 49B, Málaga. ¿Es correcta?',
+        { direccion: 'Calle Gerald Brenan 49B', municipio: 'Málaga' }
+      ),
+      true
+    );
+  });
+
+  test('detecta la petición de corrección de dirección', () => {
+    assert.equal(
+      isAddressCorrectionPrompt('Indíquenos por favor la dirección correcta. Si lo prefiere, también puede compartir la ubicación del inmueble por WhatsApp.'),
+      true
+    );
+  });
+
+  test('detecta una negativa simple a la dirección', () => {
+    assert.equal(isPlainAddressRejection('No es correcta'), true);
+  });
+
+  test('detecta una corrección real de dirección', () => {
+    assert.equal(
+      hasMeaningfulAddressCorrection('No, es Calle Granada 12, 2ºB', { locationCoords: '' }),
+      true
+    );
   });
 });

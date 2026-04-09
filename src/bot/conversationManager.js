@@ -1,5 +1,5 @@
 // src/bot/conversationManager.js
-// Estado técnico en DynamoDB (multi-instancia); datos de negocio en Excel.
+// Estado técnico en backend local (Excel) o DynamoDB; datos de negocio en Excel.
 
 const fs   = require('fs');
 
@@ -14,7 +14,7 @@ const {
   updateConversationExcel,
 } = require('../utils/excelManager');
 
-const dynamoStateStore = require('../utils/dynamoStateStore');
+const stateStore = require('../utils/stateStore');
 const { EXCEL_PATH, CONV_STATE_FILE } = require('../utils/pathConfig');
 
 const INACTIVITY_MS = Number(
@@ -29,6 +29,7 @@ const TECH_FIELDS = new Set([
   'status',
   'stage',
   'lastBotResponseType',
+  'addressStatus',
   'locationRequestCount',
   'attempts',
   'inactivityAttempts',
@@ -69,9 +70,10 @@ migrateStateSheetToFile();
 
 // ── Migración asíncrona bot_state.xlsx → DynamoDB ────────────────────────────
 // Llamar desde index.js con `await conversationManager.init()` antes de arrancar
-// el servidor. Solo hace algo si bot_state.xlsx existe (primera vez con DynamoDB).
+// el servidor. Solo hace algo cuando el backend activo es DynamoDB.
 
 async function init() {
+  if (stateStore.backend !== 'dynamodb') return;
   if (!fs.existsSync(CONV_STATE_FILE)) return;
 
   const states = readAllStatesFromExcel();
@@ -80,7 +82,7 @@ async function init() {
   console.log(`🔀 Migrando ${states.length} estado(s) de bot_state.xlsx → DynamoDB...`);
   for (const state of states) {
     if (!state.waId) continue;
-    await dynamoStateStore.upsertState(state.waId, state);
+    await stateStore.upsertState(state.waId, state);
   }
 
   fs.renameSync(CONV_STATE_FILE, `${CONV_STATE_FILE}.migrated`);
@@ -98,6 +100,7 @@ function mergeConversation(baseExcel, state) {
     status: safeState.status || (safeState.stage === 'escalated' ? 'escalated' : 'pending'),
     stage: safeState.stage || 'consent',
     lastBotResponseType: safeState.lastBotResponseType || '',
+    addressStatus: safeState.addressStatus || 'pending',
     locationRequestCount: Number(safeState.locationRequestCount || 0),
     attempts: Number(safeState.attempts || 0),
     inactivityAttempts: Number(safeState.inactivityAttempts || 0),
@@ -116,11 +119,11 @@ async function getConversation(waId) {
   const key = normalizeWaId(waId) || String(waId);
   const baseExcel = readConversationByWaId(key);
   if (!baseExcel) return null;
-  return mergeConversation(baseExcel, await dynamoStateStore.readStateByWaId(key));
+  return mergeConversation(baseExcel, await stateStore.readStateByWaId(key));
 }
 
 async function getAllConversations() {
-  const states = await dynamoStateStore.readAllStates();
+  const states = await stateStore.readAllStates();
   const out = [];
   for (const state of states) {
     const key = normalizeWaId(state.waId) || String(state.waId || '');
@@ -142,7 +145,7 @@ async function createOrUpdateConversation(waId, data = {}) {
     if (EXCEL_FIELDS.has(k)) excelPatch[k] = v;
   }
 
-  if (Object.keys(techPatch).length)  await dynamoStateStore.upsertState(key, techPatch);
+  if (Object.keys(techPatch).length)  await stateStore.upsertState(key, techPatch);
   if (Object.keys(excelPatch).length) updateConversationExcel(key, excelPatch);
 
   return getConversation(key);

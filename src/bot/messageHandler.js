@@ -32,6 +32,8 @@ const ESTADO_IA_TO_STAGE = {
 };
 
 const TASK_FALLBACK_MESSAGES = {
+  confirmar_direccion: '¿Es correcta la dirección registrada para este siniestro?',
+  corregir_direccion: 'Indíquenos por favor la dirección correcta. Si lo prefiere, también puede compartir la ubicación del inmueble por WhatsApp.',
   confirmar_at_perito: '¿Será usted quien atienda al perito en la visita, o será otra persona?',
   pedir_estimacion: '¿Podría indicarnos una estimación aproximada del importe de los daños?',
   evaluar_digital: '¿Le vendría bien realizar la peritación por videollamada, o prefiere que el perito acuda en persona?',
@@ -72,6 +74,17 @@ function isPeritoAttendeeMentionInUser(text) {
   );
 }
 
+function isConsentPrompt(text) {
+  const t = norm(text);
+  if (!t) return false;
+
+  return (
+    t.includes('necesitamos confirmar si desea continuar la conversacion por este medio') ||
+    t.includes('desea continuar la gestion por este medio') ||
+    t.includes('desea continuar la conversacion por este medio')
+  );
+}
+
 function isAffirmativeAck(text) {
   const t = String(text || '').trim().toLowerCase();
   return /^(si|sí|ok|vale|perfecto|correcto|todo ok|todo correcto|de acuerdo|confirmado)$/.test(t);
@@ -80,6 +93,87 @@ function isAffirmativeAck(text) {
 function isNegativeAck(text) {
   const t = norm(text).trim();
   return /^(no|negativo|prefiero no|rechazo)$/.test(t);
+}
+
+function normalizeShortReply(text) {
+  return norm(text).trim().replace(/[.!,;:¿?]+$/g, '');
+}
+
+function buildRegisteredAddressText(valoresExcel = {}) {
+  return [valoresExcel?.direccion, valoresExcel?.municipio].filter(Boolean).join(', ').trim();
+}
+
+function isAddressConfirmationPrompt(text, valoresExcel = {}) {
+  const t = norm(text);
+  if (!t) return false;
+
+  const addressRef = norm(buildRegisteredAddressText(valoresExcel));
+  const asksConfirmation =
+    t.includes('es correcta') ||
+    t.includes('es correcto') ||
+    t.includes('hay algun dato que corregir');
+  const mentionsRegisteredAddress =
+    t.includes('direccion registrada') ||
+    t.includes('direccion del siniestro') ||
+    t.includes('segun nuestros datos, la direccion');
+
+  return Boolean(asksConfirmation && (mentionsRegisteredAddress || (addressRef && t.includes(addressRef))));
+}
+
+function isAddressCorrectionPrompt(text) {
+  const t = norm(text);
+  if (!t) return false;
+
+  return (
+    t.includes('direccion correcta') &&
+    (t.includes('puede compartir la ubicacion') || t.includes('tambien puede compartir la ubicacion'))
+  );
+}
+
+function isPlainAddressRejection(text) {
+  const t = normalizeShortReply(text);
+  return /^(no|incorrecta|incorrecto|no es correcta|no es correcto|es incorrecta|es incorrecto)$/.test(t);
+}
+
+function hasMeaningfulAddressCorrection(text, { locationCoords = '' } = {}) {
+  if (String(locationCoords || '').trim()) return true;
+
+  const raw = String(text || '').trim();
+  if (!raw) return false;
+
+  return !isAffirmativeAck(raw) && !isPlainAddressRejection(raw);
+}
+
+function isLocationRequestPrompt(text) {
+  const t = norm(text);
+  if (!t) return false;
+
+  return (
+    t.includes('compartir la ubicacion del inmueble') ||
+    t.includes('compartir la ubicacion del riesgo') ||
+    t.includes('enviar la ubicacion del inmueble') ||
+    t.includes('enviar la ubicacion del riesgo')
+  );
+}
+
+/**
+ * Detecta si el usuario está rechazando explícitamente una solicitud de ubicación
+ * (ej: "no quiero", "no puedo", "prefiero no")
+ */
+function isLocationRequestRejection(text) {
+  const t = norm(text);
+  if (!t) return false;
+  
+  const shortReply = t.trim();
+  
+  return (
+    shortReply === 'no' ||
+    t.includes('no quiero') ||
+    t.includes('no puedo') ||
+    t.includes('prefiero no') ||
+    t.includes('no compartir') ||
+    t.includes('no enviar')
+  );
 }
 
 function isExplicitHumanEscalationIntent(text) {
@@ -194,6 +288,8 @@ function hasMeaningfulAttendee(conversation, { lastBotMessage = '', userText = '
 
 function detectNextRequiredTask({
   conversation,
+  currentStage,
+  addressStatus,
   lastBotMessage,
   userText,
   estimateAlreadyKnown,
@@ -203,6 +299,15 @@ function detectNextRequiredTask({
   locationAlreadyShared,
   locationRequestCount,
 }) {
+  const stage = String(currentStage || conversation?.stage || 'consent').trim() || 'consent';
+  const effectiveAddressStatus = String(addressStatus || conversation?.addressStatus || 'pending').trim() || 'pending';
+  const addressResolved = effectiveAddressStatus === 'confirmed' || effectiveAddressStatus === 'corrected';
+
+  if (stage !== 'consent') {
+    if (effectiveAddressStatus === 'needs_correction') return 'corregir_direccion';
+    if (!addressResolved) return 'confirmar_direccion';
+  }
+
   const attendeeKnown = hasMeaningfulAttendee(conversation, { lastBotMessage, userText, extractedAttendeeName });
   if (!attendeeKnown) return 'confirmar_at_perito';
   if (!estimateAlreadyKnown) return 'pedir_estimacion';
@@ -335,6 +440,31 @@ function buildForcedConsentConfirmationResponse({ valoresExcel }) {
   };
 }
 
+function buildForcedAddressConfirmationResponse({ valoresExcel }) {
+  const registeredAddress = buildRegisteredAddressText(valoresExcel);
+  return {
+    mensaje_para_usuario: registeredAddress
+      ? `La dirección registrada para este siniestro es ${registeredAddress}. ¿Es correcta?`
+      : TASK_FALLBACK_MESSAGES.confirmar_direccion,
+    mensaje_entendido: true,
+    datos_extraidos: {
+      estado_expediente: 'identificacion',
+      tipo_respuesta: 'normal',
+    },
+  };
+}
+
+function buildForcedAddressCorrectionResponse() {
+  return {
+    mensaje_para_usuario: TASK_FALLBACK_MESSAGES.corregir_direccion,
+    mensaje_entendido: true,
+    datos_extraidos: {
+      estado_expediente: 'identificacion',
+      tipo_respuesta: 'normal',
+    },
+  };
+}
+
 function buildForcedAttendeeConfirmationResponse({ valoresExcel, waId, relation = '' }) {
   return {
     mensaje_para_usuario: TASK_FALLBACK_MESSAGES.pedir_estimacion,
@@ -347,6 +477,69 @@ function buildForcedAttendeeConfirmationResponse({ valoresExcel, waId, relation 
       telefono_contacto: normalizeContactPhone(waId),
     },
   };
+}
+
+function buildForcedLocationRequestResponse() {
+  return {
+    mensaje_para_usuario: TASK_FALLBACK_MESSAGES.pedir_ubicacion,
+    mensaje_entendido: true,
+    datos_extraidos: {
+      estado_expediente: 'agendando',
+      tipo_respuesta: 'peticion_ubicacion',
+    },
+  };
+}
+
+function buildForcedLocationClosureResponse() {
+  return {
+    mensaje_para_usuario: 'Entendido. Continuamos sin la ubicación del inmueble. Pasemos al siguiente paso.',
+    mensaje_entendido: true,
+    datos_extraidos: {
+      estado_expediente: 'agendando',
+      tipo_respuesta: 'normal',
+    },
+  };
+}
+
+function getTaskFallbackMessage(task, valoresExcel = {}) {
+  if (task === 'confirmar_direccion') {
+    return buildForcedAddressConfirmationResponse({ valoresExcel }).mensaje_para_usuario;
+  }
+
+  return TASK_FALLBACK_MESSAGES[task] || TASK_FALLBACK_MESSAGES.seguimiento_abierto;
+}
+
+function doesResponseMatchTask(task, { responseType = 'normal', message = '', valoresExcel = {} } = {}) {
+  switch (task) {
+    case 'confirmar_direccion':
+      return isAddressConfirmationPrompt(message, valoresExcel);
+    case 'corregir_direccion':
+      return isAddressCorrectionPrompt(message);
+    case 'pedir_ubicacion':
+      return responseType === 'peticion_ubicacion' || isLocationRequestPrompt(message);
+    default:
+      return false;
+  }
+}
+
+function buildForcedTaskResponse(task, { valoresExcel, currentStage } = {}) {
+  switch (task) {
+    case 'confirmar_direccion':
+      return buildForcedAddressConfirmationResponse({ valoresExcel });
+    case 'corregir_direccion':
+      return buildForcedAddressCorrectionResponse();
+    case 'pedir_ubicacion':
+      return buildForcedLocationRequestResponse();
+    default:
+      return {
+        mensaje_para_usuario: getTaskFallbackMessage(task, valoresExcel),
+        mensaje_entendido: true,
+        datos_extraidos: {
+          estado_expediente: getFallbackAiStateForTask(currentStage, task),
+          tipo_respuesta: 'normal',
+        },
+      };
+  }
 }
 
 function hasSharedLocation(conversation, currentLocationCoords) {
@@ -597,6 +790,7 @@ async function processMessage(waId, messageObj) {
     // Detectar primera respuesta ANTES de registrar actividad
     const isFirstResponse = !conversation.lastUserMessageAt;
     const currentStage = String(conversation.stage || 'consent').trim() || 'consent';
+    const currentAddressStatus = String(conversation.addressStatus || 'pending').trim() || 'pending';
 
     // Registrar actividad (resetea inactivityAttempts y nextReminderAt)
     await conversationManager.recordUserMessage(waId);
@@ -616,6 +810,24 @@ async function processMessage(waId, messageObj) {
     const relationFromCurrent = extractRelationship(text);
     const peritoAttendeeContext = isPeritoAttendeePrompt(lastBotMessage) || isPeritoAttendeeMentionInUser(text);
     const identityConfirmedNow = lastBotResponseType === 'pregunta_identidad' && isAffirmativeAck(text);
+    const identityResolvedNow = lastBotResponseType === 'pregunta_identidad' && (isAffirmativeAck(text) || Boolean(relationFromCurrent));
+    const addressConfirmationActive = isAddressConfirmationPrompt(lastBotMessage, valoresExcel);
+    const addressCorrectionActive = currentAddressStatus === 'needs_correction' || isAddressCorrectionPrompt(lastBotMessage);
+    const addressConfirmedNow = addressConfirmationActive && isAffirmativeAck(text);
+    const addressRejectedWithoutCorrection =
+      (addressConfirmationActive || addressCorrectionActive) &&
+      !locationCoords &&
+      isPlainAddressRejection(text);
+    const addressCorrectionProvidedNow =
+      (addressConfirmationActive || addressCorrectionActive) &&
+      hasMeaningfulAddressCorrection(text, { locationCoords });
+    const effectiveAddressStatus = addressCorrectionProvidedNow
+      ? 'corrected'
+      : addressRejectedWithoutCorrection
+        ? 'needs_correction'
+        : addressConfirmedNow
+          ? 'confirmed'
+          : currentAddressStatus;
     const relationAlreadyKnown = Boolean(
       (!peritoAttendeeContext && relationFromCurrent) ||
       (conversation.relacion && String(conversation.relacion).trim())
@@ -637,6 +849,13 @@ async function processMessage(waId, messageObj) {
     }
     if (cpInfo) {
       contextoSistema += `\n[CP DETECTADO]: El código postal ${cpInfo.cp} corresponde a ${cpInfo.localidad} (${cpInfo.provincia}). No preguntes la localidad, úsala directamente.`;
+    }
+    if (effectiveAddressStatus === 'confirmed') {
+      contextoSistema += '\n[DIRECCIÓN CONFIRMADA]: La dirección del expediente ya ha sido confirmada por el usuario. No vuelvas a pedirla.';
+    } else if (effectiveAddressStatus === 'corrected') {
+      contextoSistema += '\n[DIRECCIÓN CORREGIDA]: El usuario ya ha corregido la dirección del expediente. Usa la versión corregida del historial y no vuelvas a pedir confirmación.';
+    } else if (effectiveAddressStatus === 'needs_correction') {
+      contextoSistema += '\n[DIRECCIÓN PENDIENTE DE CORRECCIÓN]: El usuario indicó que la dirección del Excel no es correcta. Pide exclusivamente la dirección corregida y menciona que puede compartir la ubicación si lo prefiere.';
     }
     if (conversation.idioma && conversation.idioma !== 'es') {
       contextoSistema += `\n[IDIOMA ACTIVO]: ${conversation.idioma} — Responde SIEMPRE en este idioma, sin excepción.`;
@@ -666,12 +885,12 @@ async function processMessage(waId, messageObj) {
       }
     }
 
-    // Reintento de petición de ubicación si el asegurado la ignoró
+    // Reintento de petición de ubicación si el asegurado la ignoró o rechazó
     if (!locationCoords && conversation.status !== 'awaiting_location' && lastBotResponseType === 'peticion_ubicacion') {
-      if (locationRequestCount < 2) {
-        contextoSistema += '\n[UBICACIÓN IGNORADA – REINTENTAR]: El asegurado ha respondido sin enviar la ubicación GPS. Vuelve a pedirla con el mismo mensaje exacto antes de continuar con el flujo.';
-      } else {
-        contextoSistema += '\n[UBICACIÓN IGNORADA – SEGUNDA VEZ]: El asegurado ha ignorado la petición de ubicación en dos ocasiones. Continúa con el flujo sin cerrar la conversación e incluye «ubicacion_pendiente»: true en datos_extraidos.';
+      if (locationRequestCount === 1) {
+        contextoSistema += '\n[UBICACIÓN RECHAZADA UNA VEZ]: El asegurado rechazó compartir la ubicación. Vuelve a pedirla una última vez con el mismo mensaje exacto antes de continuar con el flujo.';
+      } else if (locationRequestCount >= 2) {
+        contextoSistema += '\n[UBICACIÓN RECHAZADA DOS VECES]: El asegurado ha rechazado la ubicación dos veces. NO vuelvas a pedirla. Continúa con el flujo normal (agradece brevemente y avanza) sin cerrar la conversación.';
       }
     }
     contextoSistema += '\n[DISTINCIÓN DE CAMPOS]: "Relación" es SOLO la relación del interlocutor actual con el asegurado. "AT. Perito" es SOLO la persona que atenderá al perito en la visita.';
@@ -765,12 +984,36 @@ async function processMessage(waId, messageObj) {
     }
 
     // ── Llamada a la IA ──────────────────────────────────────────────────
-    const consentConfirmedNow = currentStage === 'consent' && isAffirmativeAck(text);
+    const consentPromptDetected = currentStage === 'consent' || isConsentPrompt(lastBotMessage);
+    const consentConfirmedNow = consentPromptDetected && isAffirmativeAck(text);
     const attendeeConfirmedNow = peritoAttendeeContext && isAffirmativeAck(text);
     let respuestaIA;
+    let forcePauseAfterReply = false;
+    let forceLocationRetry = false;
     if (consentConfirmedNow) {
       respuestaIA = buildForcedConsentConfirmationResponse({ valoresExcel });
-      L.warn('⚠️  Consentimiento afirmativo detectado con acuse simple; se fuerza la pregunta de identidad sin pasar por la IA');
+      L.warn(`⚠️  Consentimiento afirmativo detectado (stage=${currentStage}, consentimiento_detectado=${consentPromptDetected ? 'sí' : 'no'}) — se fuerza la pregunta de identidad sin pasar por la IA`);
+    } else if (identityResolvedNow && currentAddressStatus === 'pending') {
+      respuestaIA = buildForcedAddressConfirmationResponse({ valoresExcel });
+      L.warn('⚠️  Identidad resuelta y dirección aún no validada — se fuerza la confirmación de dirección');
+    } else if (addressRejectedWithoutCorrection) {
+      respuestaIA = buildForcedAddressCorrectionResponse();
+      L.warn('⚠️  Dirección rechazada sin corrección — se fuerza la petición de dirección corregida');
+    } else if ((lastBotResponseType === 'peticion_ubicacion' || isLocationRequestPrompt(lastBotMessage)) && !locationCoords) {
+      if (locationRequestCount < 2) {
+        respuestaIA = buildForcedLocationRequestResponse();
+        forceLocationRetry = true;
+        L.warn('⚠️  Falta la ubicación tras la primera petición — se fuerza un único reintento');
+      } else {
+        forcePauseAfterReply = true;
+        L.warn('⚠️  Segunda negativa a compartir ubicación — se continúa sin pedir la ubicación adicionalmente');
+        respuestaIA = await requestAIResponse({
+          historial,
+          mensajeUsuario: text,
+          contextoSistema,
+          valoresExcel,
+        });
+      }
     } else if (attendeeConfirmedNow && !estimateAlreadyKnown) {
       respuestaIA = buildForcedAttendeeConfirmationResponse({
         valoresExcel,
@@ -806,6 +1049,8 @@ async function processMessage(waId, messageObj) {
     );
     let nextRequiredTask = detectNextRequiredTask({
       conversation,
+      currentStage,
+      addressStatus: effectiveAddressStatus,
       lastBotMessage,
       userText: text,
       estimateAlreadyKnown,
@@ -815,6 +1060,32 @@ async function processMessage(waId, messageObj) {
       locationAlreadyShared,
       locationRequestCount,
     });
+
+    const mustForceTaskNow =
+      !forceLocationRetry &&
+      (
+        (
+          ['confirmar_direccion', 'corregir_direccion', 'pedir_ubicacion'].includes(nextRequiredTask) &&
+          !doesResponseMatchTask(nextRequiredTask, {
+            responseType,
+            message: respuestaIA.mensaje_para_usuario,
+            valoresExcel,
+          })
+        ) ||
+        (responseType === 'peticion_ubicacion' && nextRequiredTask !== 'pedir_ubicacion')
+      );
+
+    if (mustForceTaskNow) {
+      const forcedTaskResponse = buildForcedTaskResponse(nextRequiredTask, {
+        valoresExcel,
+        currentStage,
+      });
+      respuestaIA = forcedTaskResponse;
+      responseType = String(respuestaIA.datos_extraidos?.tipo_respuesta || 'normal').trim() || 'normal';
+      hasOutgoingMessage = Boolean(respuestaIA.mensaje_para_usuario);
+      nextStage = ESTADO_IA_TO_STAGE[respuestaIA.datos_extraidos?.estado_expediente];
+      L.warn(`⚠️  Tarea obligatoria forzada por backend (${nextRequiredTask})`);
+    }
 
     // ── Neutralización determinista de cierre/resumen ─────────────────────────
     // El bot ya no puede cerrar la conversación. Si la IA intenta resumir,
@@ -830,7 +1101,7 @@ async function processMessage(waId, messageObj) {
 
     if (aiWantsToClose && !isLegitimateClose) {
       const fallbackAiState = getFallbackAiStateForTask(currentStage, nextRequiredTask);
-      const fallbackMessage = TASK_FALLBACK_MESSAGES[nextRequiredTask];
+      const fallbackMessage = getTaskFallbackMessage(nextRequiredTask, valoresExcel);
       const canReuseAiMessage =
         hasOutgoingMessage &&
         !looksLikeClosureMessage(respuestaIA.mensaje_para_usuario) &&
@@ -856,6 +1127,7 @@ async function processMessage(waId, messageObj) {
     let aiWantsToSummarizeOrClose = isTerminalResponseType(responseType);
 
     if (
+      nextRequiredTask === 'pedir_ubicacion' &&
       !locationAlreadyShared &&
       locationRequestCount < 2 &&
       aiWantsToSummarizeOrClose &&
@@ -879,6 +1151,7 @@ async function processMessage(waId, messageObj) {
     }
 
     if (
+      nextRequiredTask === 'pedir_ubicacion' &&
       !locationAlreadyShared &&
       locationRequestCount >= 2 &&
       aiWantsToSummarizeOrClose &&
@@ -909,6 +1182,22 @@ async function processMessage(waId, messageObj) {
       }
     }
 
+    // Si el usuario rechazó la ubicación dos veces y no quedan más tareas, cerrar con mensaje de cierre
+    if (forcePauseAfterReply && nextRequiredTask === 'seguimiento_abierto') {
+      respuestaIA = {
+        mensaje_para_usuario: 'Entendido. Hemos registrado la información disponible sobre su siniestro. Le contactaremos próximamente para gestionar la peritación.',
+        mensaje_entendido: true,
+        datos_extraidos: {
+          ...(respuestaIA.datos_extraidos || {}),
+          estado_expediente: 'agendando',
+          tipo_respuesta: 'normal',
+        },
+      };
+      responseType = 'normal';
+      hasOutgoingMessage = true;
+      L.warn('⚠️  Conversación cerrada tras segunda negativa a la ubicación — mensaje de cierre enviado');
+    }
+
     // Persistir mensajes y datos extraídos en el Excel
     if (respuestaIA.mensaje_entendido) {
       const {
@@ -933,6 +1222,9 @@ async function processMessage(waId, messageObj) {
           ...(hasOutgoingMessage ? [{ direction: 'out', text: respuestaIA.mensaje_para_usuario, timestamp: new Date().toISOString() }] : []),
         ],
       };
+      if (effectiveAddressStatus !== currentAddressStatus) {
+        excelUpdates.addressStatus = effectiveAddressStatus;
+      }
       const relacionInterlocutor = String(peritoAttendeeContext ? '' : (relationFromCurrent || relacion_contacto || '')).trim();
       if (relacionInterlocutor) {
         excelUpdates.relacion = relacionInterlocutor;
@@ -972,8 +1264,19 @@ async function processMessage(waId, messageObj) {
       } else if (typeof acepta_videollamada === 'boolean') {
         excelUpdates.digital = acepta_videollamada ? 'Sí' : 'No';
       }
-      if (locationCoords) excelUpdates.coordenadas = locationCoords;
-      if (tipo_respuesta === 'peticion_ubicacion') {
+      // Incrementar contador si:
+      // 1. Bot acaba de pedir ubicación (tipo_respuesta = 'peticion_ubicacion')
+      // 2. Usuario rechaza explícitamente después de una solicitud previa
+      const userRejectsLocation = (lastBotResponseType === 'peticion_ubicacion' || isLocationRequestPrompt(lastBotMessage)) && isLocationRequestRejection(text);
+      if (locationCoords) {
+        excelUpdates.coordenadas = locationCoords;
+      } else if (userRejectsLocation && locationRequestCount >= 2 && !String(conversation.coordenadas || '').trim()) {
+        excelUpdates.coordenadas = '[no proporcionado]';
+      }
+      if (userRejectsLocation && locationRequestCount >= 2) {
+        forcePauseAfterReply = true;
+      }
+      if (tipo_respuesta === 'peticion_ubicacion' || userRejectsLocation) {
         excelUpdates.locationRequestCount = locationRequestCount + 1;
       } else if (locationCoords) {
         excelUpdates.locationRequestCount = 0;
@@ -993,7 +1296,6 @@ async function processMessage(waId, messageObj) {
         excelUpdates.locationStandbyUntil = Date.now() + standbyHoras * 3600000;
         L.log(`📍 Ubicación pendiente — standby activado por ${standbyHoras}h`);
       }
-
       const nuevoStage = ESTADO_IA_TO_STAGE[estado_expediente];
       if (nuevoStage) {
         if (!canApplyStageTransition(currentStage, nuevoStage)) {
@@ -1005,6 +1307,14 @@ async function processMessage(waId, messageObj) {
           excelUpdates.stage = nuevoStage;
           L.log(`🔄 Stage ${currentStage} → ${nuevoStage}`);
         }
+      }
+
+      if (forcePauseAfterReply) {
+        excelUpdates.stage = 'cerrado';
+        excelUpdates.status = 'paused';
+        excelUpdates.nextReminderAt = null;
+        excelUpdates.locationStandbyUntil = 0;
+        L.log('ℹ️  Usuario rechazó la ubicación dos veces — conversación cerrada, recordatorios desactivados');
       }
 
       // ── Calendario Outlook: guardar datos de cita confirmada en Excel ──
@@ -1068,6 +1378,11 @@ module.exports = {
     normalizeContactPhone,
     isAffirmativeAck,
     isNegativeAck,
+    isConsentPrompt,
+    isAddressConfirmationPrompt,
+    isAddressCorrectionPrompt,
+    isPlainAddressRejection,
+    hasMeaningfulAddressCorrection,
     isExplicitHumanEscalationIntent,
     canApplyStageTransition,
     getNonTerminalAiStateForStage,
@@ -1083,6 +1398,9 @@ module.exports = {
     getFallbackAiStateForTask,
     buildSummaryFallbackMessage,
     buildForcedConsentConfirmationResponse,
+    buildForcedAddressConfirmationResponse,
+    buildForcedAddressCorrectionResponse,
     buildForcedAttendeeConfirmationResponse,
+    buildForcedLocationClosureResponse,
   },
 };

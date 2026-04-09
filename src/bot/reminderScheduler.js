@@ -109,7 +109,7 @@ async function runChecks() {
 
     if (!usuarioRespondio) {
       // ── Escenario A: sin respuesta al primer mensaje ──────────────────────
-      await pausarSeguimiento(waId, nexp, 'sin_respuesta_inicial');
+      await pausarSeguimiento(waId, nexp, 'sin_respuesta_inicial', { contacto: 'No' });
     } else {
       // ── Escenario B: inactividad a mitad de conversación ──────────────────
       await handleInactivity(conv, now);

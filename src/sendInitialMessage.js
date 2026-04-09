@@ -8,7 +8,7 @@ const XLSX = require('xlsx');
 const { sendInitialTemplate, buildSaludoByHour, buildInitialTemplateText } = require('./bot/templateSender');
 const conversationManager = require('./bot/conversationManager');
 const { triggerEncargoSync } = require('./bot/peritolineAutoSync');
-const dynamoStateStore = require('./utils/dynamoStateStore');
+const stateStore = require('./utils/stateStore');
 const { EXCEL_PATH } = require('./utils/pathConfig');
 const log = require('./utils/logger');
 
@@ -102,18 +102,18 @@ async function sendInitialMessages(opts = {}) {
 
   if (dryRun) console.log('⚠️  MODO DRY-RUN: no se enviarán mensajes reales\n');
 
-  // Cargar waIds con conversación ACTIVA (no terminal) desde DynamoDB para no resetear estados en curso.
+  // Cargar waIds con conversación ACTIVA (no terminal) desde el backend de estado para no resetear estados en curso.
   // Las conversaciones en estado terminal (escalated/finalizado/cerrado) SÍ pueden
   // reiniciarse si el Excel ha sido limpiado para un nuevo envío.
   const TERMINAL_STAGES_RESET = new Set(['escalated', 'finalizado', 'cerrado']);
-  const allDynamoStates = await dynamoStateStore.readAllStates();
+  const allDynamoStates = await stateStore.readAllStates();
   const existingWaIds = new Set(
     allDynamoStates
       .filter(s => !TERMINAL_STAGES_RESET.has(s.stage) && s.status !== 'escalated')
       .map(s => String(s.waId))
   );
   if (existingWaIds.size > 0) {
-    console.log(`🔒 Conversaciones activas en DynamoDB: ${existingWaIds.size} (se omitirán)\n`);
+    console.log(`🔒 Conversaciones activas en backend de estado (${stateStore.backend}): ${existingWaIds.size} (se omitirán)\n`);
   }
 
   let filas;
@@ -213,6 +213,7 @@ async function sendInitialMessages(opts = {}) {
         relacion:            '',
         idioma:              '',
         lastBotResponseType: '',
+        addressStatus:       'pending',
         locationRequestCount: 0,
         locationStandbyUntil: 0,
         status:              'pending',

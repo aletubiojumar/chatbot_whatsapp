@@ -64,6 +64,7 @@ const STATE_FIELDS = {
   status:             'status',
   stage:              'stage',
   lastBotResponseType:'lastBotResponseType',
+  addressStatus:      'addressStatus',
   locationRequestCount:'locationRequestCount',
   attempts:           'attempts',
   inactivityAttempts: 'inactivityAttempts',
@@ -71,6 +72,7 @@ const STATE_FIELDS = {
   lastUserMessageAt:  'lastUserMessageAt',
   lastReminderAt:     'lastReminderAt',
   lastMessageAt:      'lastMessageAt',
+  locationStandbyUntil:'locationStandbyUntil',
   mensajes:           'mensajes',
 };
 
@@ -171,9 +173,10 @@ function migrateStateSheetToFile() {
       setCellValue(dstWs, dstRow, dstHeaders[STATE_FIELDS.status],  String(next.status  || 'pending'));
       setCellValue(dstWs, dstRow, dstHeaders[STATE_FIELDS.stage],   String(next.stage   || 'consent'));
       setCellValue(dstWs, dstRow, dstHeaders[STATE_FIELDS.lastBotResponseType], String(next.lastBotResponseType || ''));
+      setCellValue(dstWs, dstRow, dstHeaders[STATE_FIELDS.addressStatus], String(next.addressStatus || 'pending'));
       for (const f of [STATE_FIELDS.attempts, STATE_FIELDS.inactivityAttempts,
         STATE_FIELDS.locationRequestCount, STATE_FIELDS.nextReminderAt, STATE_FIELDS.lastUserMessageAt,
-        STATE_FIELDS.lastReminderAt, STATE_FIELDS.lastMessageAt]) {
+        STATE_FIELDS.lastReminderAt, STATE_FIELDS.lastMessageAt, STATE_FIELDS.locationStandbyUntil]) {
         const v = next[f];
         if (v === null || v === undefined || v === '') setCellValue(dstWs, dstRow, dstHeaders[f], '');
         else setCellNumber(dstWs, dstRow, dstHeaders[f], Number(v));
@@ -368,6 +371,7 @@ function rowToState(ws, headers, r) {
     status: status || (stage === 'escalated' ? 'escalated' : 'pending'),
     stage: stage || 'consent',
     lastBotResponseType: getCellStr(ws, r, headers[STATE_FIELDS.lastBotResponseType]).trim() || '',
+    addressStatus: getCellStr(ws, r, headers[STATE_FIELDS.addressStatus]).trim() || 'pending',
     locationRequestCount: getCellNum(ws, r, headers[STATE_FIELDS.locationRequestCount]) || 0,
     attempts: getCellNum(ws, r, headers[STATE_FIELDS.attempts]) || 0,
     inactivityAttempts: getCellNum(ws, r, headers[STATE_FIELDS.inactivityAttempts]) || 0,
@@ -375,6 +379,7 @@ function rowToState(ws, headers, r) {
     lastUserMessageAt: getCellNum(ws, r, headers[STATE_FIELDS.lastUserMessageAt]),
     lastReminderAt: getCellNum(ws, r, headers[STATE_FIELDS.lastReminderAt]),
     lastMessageAt: getCellNum(ws, r, headers[STATE_FIELDS.lastMessageAt]),
+    locationStandbyUntil: getCellNum(ws, r, headers[STATE_FIELDS.locationStandbyUntil]),
     mensajes,
   };
 }
@@ -407,6 +412,7 @@ function rowToConv(ws, headers, r) {
     danos:     getCellStr(ws, r, headers['Daños']),
     digital:   getCellStr(ws, r, headers['Digital']),
     horario:   getCellStr(ws, r, headers['Horario']),
+    coordenadas: getCellStr(ws, r, headers['Coordenadas']),
   };
 }
 
@@ -566,6 +572,7 @@ function upsertStateInExcel(waId, patch = {}) {
     setCellValue(ws, row, headers[STATE_FIELDS.status], String(next.status || 'pending'));
     setCellValue(ws, row, headers[STATE_FIELDS.stage], String(next.stage || 'consent'));
     setCellValue(ws, row, headers[STATE_FIELDS.lastBotResponseType], String(next.lastBotResponseType || ''));
+    setCellValue(ws, row, headers[STATE_FIELDS.addressStatus], String(next.addressStatus || 'pending'));
 
     const numericFields = [
       STATE_FIELDS.locationRequestCount,
@@ -575,6 +582,7 @@ function upsertStateInExcel(waId, patch = {}) {
       STATE_FIELDS.lastUserMessageAt,
       STATE_FIELDS.lastReminderAt,
       STATE_FIELDS.lastMessageAt,
+      STATE_FIELDS.locationStandbyUntil,
     ];
     for (const fieldName of numericFields) {
       const value = next[fieldName];
@@ -773,6 +781,32 @@ function cleanOldRows() {
   }
 }
 
+/**
+ * Deletea completamente el estado técnico de una conversación del backend.
+ * Útil para resetear y permitir que el mensaje inicial se reenvíe.
+ */
+function deleteStateByWaId(waId) {
+  try {
+    const wb = readStateWorkbook();
+    const ws = getOrCreateStateSheet(wb);
+    let headers = getStateHeaders(ws);
+    const row = findStateRowByWaId(ws, headers, waId);
+    
+    if (row === -1) {
+      console.log(`ℹ️  Estado técnico: waId=${waId} no encontrado (ya eliminado o nunca existió)`);
+      return true;
+    }
+    
+    deleteSheetRow(ws, row);
+    saveStateWorkbook(wb);
+    console.log(`✅ Estado técnico eliminado | waId=${waId}`);
+    return true;
+  } catch (err) {
+    console.error(`❌ Error eliminando estado técnico (waId=${waId}):`, err.message);
+    return false;
+  }
+}
+
 module.exports = {
   isBusinessHours,
   normalizePhone,
@@ -783,6 +817,7 @@ module.exports = {
   readStateByWaId,
   readAllStatesFromExcel,
   upsertStateInExcel,
+  deleteStateByWaId,
   readConversationByWaId,
   readConversationByNexp,
   readAllConversations,
