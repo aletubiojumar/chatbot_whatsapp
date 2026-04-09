@@ -48,6 +48,7 @@ const globalQueue      = [];                 // cola global por límite de concu
 // ── Cliente SQS (lazy init) ───────────────────────────────────────────────────
 
 let _sqsClient = null;
+let _warnedNonFifo = false;
 
 function getSqsClient() {
   if (_sqsClient) return _sqsClient;
@@ -134,6 +135,11 @@ async function _sendToSqs(key, reason, anotacion, assignOnly, isFinalSync) {
   const messageBody = JSON.stringify({ key, reason, anotacion, assignOnly, isFinalSync });
 
   const isFifo = SQS_QUEUE_URL.endsWith('.fifo');
+  if (!isFifo && !_warnedNonFifo) {
+    _warnedNonFifo = true;
+    log.warn('⚠️  SQS en modo distribuido sin FIFO. No se garantiza exclusión por encargo ni orden por MessageGroupId.');
+  }
+
   const params = {
     QueueUrl:    SQS_QUEUE_URL,
     MessageBody: messageBody,

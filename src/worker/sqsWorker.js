@@ -22,12 +22,13 @@ const os         = require('os');
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const SQS_QUEUE_URL         = (process.env.SQS_QUEUE_URL || '').trim();
-const AWS_REGION            = (process.env.AWS_REGION || 'eu-south-2').trim();
-const MAX_CONCURRENT_JOBS   = Number(process.env.MAX_CONCURRENT_JOBS   || 2);
-const POLL_WAIT_SECONDS     = Number(process.env.SQS_POLL_WAIT_SECONDS || 20);   // long polling
-const VISIBILITY_TIMEOUT    = Number(process.env.SQS_VISIBILITY_TIMEOUT || 300); // 5 min
-const IDLE_SHUTDOWN_MS      = Number(process.env.WORKER_SHUTDOWN_IDLE_MS || 10 * 60 * 1000);
+const SQS_QUEUE_URL              = (process.env.SQS_QUEUE_URL || '').trim();
+const AWS_REGION                 = (process.env.AWS_REGION || 'eu-south-2').trim();
+const MAX_CONCURRENT_JOBS        = Number(process.env.MAX_CONCURRENT_JOBS   || 2);
+const POLL_WAIT_SECONDS          = Number(process.env.SQS_POLL_WAIT_SECONDS || 20);   // long polling
+const VISIBILITY_TIMEOUT         = Number(process.env.SQS_VISIBILITY_TIMEOUT || 900); // 15 min
+const VISIBILITY_HEARTBEAT_MS    = Number(process.env.SQS_VISIBILITY_HEARTBEAT_MS || 60_000);
+const IDLE_SHUTDOWN_MS           = Number(process.env.WORKER_SHUTDOWN_IDLE_MS || 10 * 60 * 1000);
 
 if (!SQS_QUEUE_URL) {
   console.error('❌ SQS_QUEUE_URL no configurado. El worker no puede arrancar.');
@@ -66,18 +67,39 @@ function getMemFreeMB() {
   return Math.round(os.freemem() / 1048576);
 }
 
-function runSyncJob(job) {
+function runSyncJob(job, receiptHandle, messageId) {
   const { key, reason, anotacion, assignOnly, isFinalSync } = job;
   const scriptPath = path.resolve(__dirname, '..', '..', 'scripts', 'peritoline_sync.js');
   const cwd        = path.resolve(__dirname, '..', '..');
+  const startAt    = Date.now();
 
   const args = [scriptPath, '--encargo', key];
   if (anotacion)   args.push('--anotacion', anotacion);
   if (assignOnly)  args.push('--assign-only');
   if (isFinalSync) args.push('--final-sync');
 
+  let heartbeatTimer = null;
+
+  function refreshVisibility() {
+    if (!receiptHandle) return;
+    sqsClient.send(new ChangeMessageVisibilityCommand({
+      QueueUrl:          SQS_QUEUE_URL,
+      ReceiptHandle:     receiptHandle,
+      VisibilityTimeout: VISIBILITY_TIMEOUT,
+    })).then(() => {
+      log(`🔄 Heartbeat refresh | msg=${messageId} | encargo=${key} | visibility=${VISIBILITY_TIMEOUT}s`);
+    }).catch((err) => {
+      log(`⚠️  Error refresh visibility | msg=${messageId} | encargo=${key}: ${err.message}`);
+    });
+  }
+
   return new Promise((resolve, reject) => {
-    log(`▶ Lanzando sync | encargo=${key} | motivo=${reason} | finalSync=${isFinalSync} | RAM libre: ${getMemFreeMB()}MB`);
+    log(`▶ Lanzando sync | encargo=${key} | motivo=${reason} | finalSync=${isFinalSync} | RAM libre: ${getMemFreeMB()}MB | msg=${messageId}`);
+
+    if (receiptHandle) {
+      heartbeatTimer = setInterval(refreshVisibility, Math.max(30_000, VISIBILITY_HEARTBEAT_MS));
+      if (heartbeatTimer.unref) heartbeatTimer.unref();
+    }
 
     const child = spawn(process.execPath, args, {
       cwd,
@@ -91,16 +113,19 @@ function runSyncJob(job) {
     });
 
     child.on('error', (err) => {
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
       log(`❌ Error lanzando proceso | encargo=${key}: ${err.message}`);
       reject(err);
     });
 
     child.on('exit', (code) => {
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      const duration = Math.round((Date.now() - startAt) / 1000);
       if (code === 0) {
-        log(`✅ Sync completado | encargo=${key}`);
+        log(`✅ Sync completado | encargo=${key} | msg=${messageId} | duración=${duration}s`);
         resolve();
       } else {
-        log(`❌ Sync terminó con código ${code} | encargo=${key}`);
+        log(`❌ Sync terminó con código ${code} | encargo=${key} | msg=${messageId} | duración=${duration}s`);
         reject(new Error(`Exit code ${code}`));
       }
     });
@@ -158,9 +183,9 @@ async function pollOnce() {
     }
 
     activeJobs++;
-    log(`🔧 Procesando job | encargo=${job.key} | jobs activos: ${activeJobs}/${MAX_CONCURRENT_JOBS}`);
+    log(`🔧 Procesando job | encargo=${job.key} | msg=${message.MessageId} | jobs activos: ${activeJobs}/${MAX_CONCURRENT_JOBS}`);
 
-    runSyncJob(job)
+    runSyncJob(job, message.ReceiptHandle, message.MessageId)
       .then(async () => {
         await deleteSqsMessage(message.ReceiptHandle);
       })
