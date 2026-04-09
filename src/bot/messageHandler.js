@@ -473,7 +473,7 @@ function buildForcedAddressCorrectionResponse() {
 
 function buildForcedAttendeeConfirmationResponse({ valoresExcel, waId, relation = '' }) {
   return {
-    mensaje_para_usuario: TASK_FALLBACK_MESSAGES.pedir_estimacion,
+    mensaje_para_usuario: TASK_FALLBACK_MESSAGES.confirmar_at_perito,
     mensaje_entendido: true,
     datos_extraidos: {
       estado_expediente: 'valoracion',
@@ -1394,6 +1394,29 @@ async function processMessage(waId, messageObj) {
     // ── Enviar respuesta ─────────────────────────────────────────────────
     const respPreview = (respuestaIA.mensaje_para_usuario || '').slice(0, 80);
     L.log(`🤖 IA [${respuestaIA.datos_extraidos?.estado_expediente || '?'}]: "${respPreview}${respPreview.length < (respuestaIA.mensaje_para_usuario || '').length ? '…' : ''}"`);
+
+    // Última protección contra cierres prematuros. Si aún tenemos un mensaje de
+    // cierre y no estamos en un stage terminal, lo reemplazamos por una respuesta
+    // abierta segura antes de enviarlo.
+    if (
+      hasOutgoingMessage &&
+      looksLikeClosureMessage(respuestaIA.mensaje_para_usuario) &&
+      !isLegitimateClose &&
+      !isTerminalStage(currentStage) &&
+      currentStage !== 'finalizado' &&
+      currentStage !== 'escalated'
+    ) {
+      const overrideMessage = getTaskFallbackMessage(nextRequiredTask, valoresExcel) || TASK_FALLBACK_MESSAGES.seguimiento_abierto;
+      L.warn(`⚠️  Cierre prematuro detectado justo antes de enviar — override aplicado: ${overrideMessage}`);
+      respuestaIA.mensaje_para_usuario = overrideMessage;
+      respuestaIA.datos_extraidos = {
+        estado_expediente: getFallbackAiStateForTask(currentStage, nextRequiredTask),
+        tipo_respuesta: 'normal',
+      };
+      responseType = 'normal';
+      nextStage = ESTADO_IA_TO_STAGE[respuestaIA.datos_extraidos.estado_expediente];
+    }
+
     // Anti-duplicado de salida: si el bot acaba de enviar ese mismo texto
     // en los últimos 60 s, lo registramos en log pero lo enviamos igualmente
     // para no dejar la conversación en silencio.
