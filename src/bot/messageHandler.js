@@ -1017,6 +1017,7 @@ async function processMessage(waId, messageObj) {
     // pero el usuario claramente responde por primera vez al template inicial.
     const consentPromptDetected = currentStage === 'consent' || isConsentPrompt(lastBotMessage) || isFirstResponse;
     const consentConfirmedNow = consentPromptDetected && isAffirmativeAck(text);
+    L.log(`🔎 Decision consent | isFirstResponse=${isFirstResponse} currentStage=${currentStage} isAffirmativeAck=${isAffirmativeAck(text)} consentPromptDetected=${consentPromptDetected} consentConfirmedNow=${consentConfirmedNow}`);
     const attendeeConfirmedNow = peritoAttendeeContext && isAffirmativeAck(text);
     let respuestaIA;
     let forcePauseAfterReply = false;
@@ -1486,6 +1487,9 @@ async function processMessage(waId, messageObj) {
     }
 
     if (hasOutgoingMessage) {
+      if (looksLikeClosureMessage(respuestaIA.mensaje_para_usuario)) {
+        L.err(`🚨 ALERTA: mensaje de cierre detectado justo antes de enviar — responseType=${responseType} nextRequiredTask=${nextRequiredTask} stage=${currentStage}`);
+      }
       const result = await adapter.sendText(waId, respuestaIA.mensaje_para_usuario);
       L.log(`✅ Enviado (msgId: ${result?.messageId}) | entendido=${respuestaIA.mensaje_entendido}`);
       await conversationManager.recordResponse(waId);
