@@ -284,10 +284,17 @@ function isAllowedTerminalTurn({
 
 function hasMeaningfulAttendee(conversation, { lastBotMessage = '', userText = '', extractedAttendeeName = '' } = {}) {
   const stored = String(conversation?.attPerito || '').trim();
-  if (stored && !stored.startsWith('sin indicar')) return true;
+  if (stored && !stored.startsWith('sin indicar')) {
+    // Los valores pre-rellenados desde la confirmación de identidad tienen relacion='sin indicar'.
+    // Solo consideramos al asistente como confirmado si la relación fue informada explícitamente.
+    const relPart = (stored.split(' - ')[1] || '').trim();
+    if (relPart && relPart !== 'sin indicar') return true;
+  }
 
-  // Si la IA ya extrajo un nombre de contacto en esta respuesta, el AT. perito es conocido
-  if (extractedAttendeeName && String(extractedAttendeeName).trim()) return true;
+  // extractedAttendeeName solo cuenta si el contexto es explícitamente sobre el asistente al perito;
+  // de lo contrario, el nombre lo extrae la IA del contexto de identidad (falso positivo).
+  const peritoContext = isPeritoAttendeePrompt(lastBotMessage) || isPeritoAttendeeMentionInUser(userText || '');
+  if (extractedAttendeeName && String(extractedAttendeeName).trim() && peritoContext) return true;
 
   return isPeritoAttendeePrompt(lastBotMessage) && isAffirmativeAck(userText);
 }
@@ -1039,12 +1046,20 @@ async function processMessage(waId, messageObj) {
         });
       }
     } else if (attendeeConfirmedNow && !estimateAlreadyKnown) {
-      respuestaIA = buildForcedAttendeeConfirmationResponse({
-        valoresExcel,
-        waId,
-        relation: String(conversation.relacion || '').trim(),
-      });
-      L.warn('⚠️  Confirmación de AT. Perito detectada con acuse simple; se fuerza la pregunta de estimación sin pasar por la IA');
+      // Usuario confirmó "sí" al AT. Perito → registrar titular como asistente y avanzar a estimación
+      const relation = String(conversation.relacion || '').trim() || 'titular';
+      respuestaIA = {
+        mensaje_para_usuario: TASK_FALLBACK_MESSAGES.pedir_estimacion,
+        mensaje_entendido: true,
+        datos_extraidos: {
+          estado_expediente: 'valoracion',
+          tipo_respuesta: 'normal',
+          nombre_contacto: String(valoresExcel?.nombre || '').trim(),
+          relacion_contacto: relation,
+          telefono_contacto: normalizeContactPhone(waId),
+        },
+      };
+      L.warn('⚠️  Confirmación "sí" de AT. Perito — se registra titular como asistente y se fuerza pedir_estimacion');
     } else {
       respuestaIA = await requestAIResponse({
         historial,
@@ -1125,7 +1140,33 @@ async function processMessage(waId, messageObj) {
 
     if (aiWantsToClose && !isLegitimateClose) {
       const fallbackAiState = getFallbackAiStateForTask(currentStage, nextRequiredTask);
-      const fallbackMessage = getTaskFallbackMessage(nextRequiredTask, valoresExcel);
+      let fallbackMessage;
+      let fallbackTipoRespuesta = 'normal';
+
+      if (nextRequiredTask === 'seguimiento_abierto') {
+        if (lastBotResponseType === 'confirmacion_resumen') {
+          // Resumen ya enviado y confirmado — acuse ligero de fin de recopilación
+          fallbackMessage = TASK_FALLBACK_MESSAGES.seguimiento_abierto;
+        } else {
+          // Todas las tareas completadas → enviar resumen de datos recopilados
+          fallbackMessage = buildSummaryFallbackMessage({
+            conversation,
+            valoresExcel,
+            lastBotMessage,
+            userText: text,
+            estimateFromCurrent,
+            preferredSchedule,
+            locationAlreadyShared,
+            extractedDigital: respuestaIA.datos_extraidos?.acepta_videollamada,
+            extractedAttendeeName: respuestaIA.datos_extraidos?.nombre_contacto,
+            extractedAttendeeRelation: respuestaIA.datos_extraidos?.relacion_contacto,
+          });
+          fallbackTipoRespuesta = 'confirmacion_resumen';
+        }
+      } else {
+        fallbackMessage = getTaskFallbackMessage(nextRequiredTask, valoresExcel);
+      }
+
       const canReuseAiMessage =
         hasOutgoingMessage &&
         !looksLikeClosureMessage(respuestaIA.mensaje_para_usuario) &&
@@ -1139,10 +1180,10 @@ async function processMessage(waId, messageObj) {
           mensaje_entendido: true,
           datos_extraidos: {
             estado_expediente: fallbackAiState,
-            tipo_respuesta: 'normal',
+            tipo_respuesta: fallbackTipoRespuesta,
           },
         };
-        responseType = 'normal';
+        responseType = fallbackTipoRespuesta;
         hasOutgoingMessage = true;
         nextStage = ESTADO_IA_TO_STAGE[fallbackAiState];
       }
@@ -1407,14 +1448,27 @@ async function processMessage(waId, messageObj) {
       currentStage !== 'finalizado' &&
       currentStage !== 'escalated'
     ) {
-      const overrideMessage = getTaskFallbackMessage(nextRequiredTask, valoresExcel) || TASK_FALLBACK_MESSAGES.seguimiento_abierto;
-      L.warn(`⚠️  Cierre prematuro detectado justo antes de enviar — override aplicado: ${overrideMessage}`);
+      let overrideMessage;
+      let overrideTipo = 'normal';
+      if (nextRequiredTask === 'seguimiento_abierto' && lastBotResponseType !== 'confirmacion_resumen') {
+        overrideMessage = buildSummaryFallbackMessage({
+          conversation, valoresExcel, lastBotMessage, userText: text,
+          estimateFromCurrent, preferredSchedule, locationAlreadyShared,
+          extractedDigital: respuestaIA.datos_extraidos?.acepta_videollamada,
+          extractedAttendeeName: respuestaIA.datos_extraidos?.nombre_contacto,
+          extractedAttendeeRelation: respuestaIA.datos_extraidos?.relacion_contacto,
+        });
+        overrideTipo = 'confirmacion_resumen';
+      } else {
+        overrideMessage = getTaskFallbackMessage(nextRequiredTask, valoresExcel) || TASK_FALLBACK_MESSAGES.seguimiento_abierto;
+      }
+      L.warn(`⚠️  Cierre prematuro detectado justo antes de enviar — override aplicado`);
       respuestaIA.mensaje_para_usuario = overrideMessage;
       respuestaIA.datos_extraidos = {
         estado_expediente: getFallbackAiStateForTask(currentStage, nextRequiredTask),
-        tipo_respuesta: 'normal',
+        tipo_respuesta: overrideTipo,
       };
-      responseType = 'normal';
+      responseType = overrideTipo;
       nextStage = ESTADO_IA_TO_STAGE[respuestaIA.datos_extraidos.estado_expediente];
     }
 
