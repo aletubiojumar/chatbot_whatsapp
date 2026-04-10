@@ -13,6 +13,7 @@ const {
   GetCommand,
   UpdateCommand,
   ScanCommand,
+  DeleteCommand,
 } = require('@aws-sdk/lib-dynamodb');
 
 const TABLE_NAME = process.env.DYNAMODB_STATE_TABLE;
@@ -143,4 +144,17 @@ function deserialize(item) {
   return s;
 }
 
-module.exports = { readStateByWaId, readAllStates, upsertState };
+async function deleteState(waId) {
+  try {
+    await ddb().send(new DeleteCommand({
+      TableName: TABLE_NAME,
+      Key: { waId: String(waId) },
+    }));
+    return true;
+  } catch (err) {
+    console.error('❌ DynamoDB deleteState:', err.message);
+    return false;
+  }
+}
+
+module.exports = { readStateByWaId, readAllStates, upsertState, deleteState };

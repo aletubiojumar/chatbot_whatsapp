@@ -39,6 +39,7 @@ const TECH_FIELDS = new Set([
   'lastMessageAt',
   'mensajes',
   'locationStandbyUntil',
+  'idioma',
 ]);
 const EXCEL_FIELDS = new Set([
   'contacto',

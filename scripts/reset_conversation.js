@@ -5,9 +5,9 @@ const conversationManager = require('../src/bot/conversationManager');
 const {
   readConversationByWaId,
   readConversationByNexp,
-  deleteStateByWaId,
   updateConversationExcel,
 } = require('../src/utils/excelManager');
+const stateStore = require('../src/utils/stateStore');
 
 function parseArgs(argv) {
   const out = {};
@@ -47,7 +47,7 @@ async function main() {
 
   if (args.delete) {
     // Opción 1: Deletear completamente
-    const deleted = deleteStateByWaId(waId);
+    const deleted = await stateStore.deleteState(waId);
     if (!deleted) {
       console.error('❌ No se pudo eliminar la conversación');
       process.exit(1);

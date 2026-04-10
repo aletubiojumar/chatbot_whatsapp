@@ -2,6 +2,7 @@ const {
   readStateByWaId: readStateByWaIdFromExcel,
   readAllStatesFromExcel,
   upsertStateInExcel,
+  deleteStateByWaId: deleteStateByWaIdFromExcel,
 } = require('./excelManager');
 const { CONV_STATE_FILE } = require('./pathConfig');
 
@@ -40,9 +41,15 @@ async function upsertState(waId, patch = {}) {
   return upsertStateInExcel(waId, patch);
 }
 
+async function deleteState(waId) {
+  if (backend === 'dynamodb') return dynamoStateStore.deleteState(waId);
+  return deleteStateByWaIdFromExcel(waId);
+}
+
 module.exports = {
   backend,
   readStateByWaId,
   readAllStates,
   upsertState,
+  deleteState,
 };

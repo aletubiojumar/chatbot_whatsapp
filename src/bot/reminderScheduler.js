@@ -29,6 +29,28 @@ const { procesarConIA }   = require('../ai/aiModel');
 const { cleanOldPdfs, cleanOldDebugLogs } = require('../utils/pdfGenerator');
 const fileLogger          = require('../utils/fileLogger');
 
+// Detecta si un mensaje generado por la IA es una despedida o cierre de conversación.
+// En ese caso se sustituye por un fallback seguro para no cortar la conversación.
+function looksLikeClosure(text) {
+  const t = String(text || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  return (
+    t.includes('le contactaremos en breve') ||
+    t.includes('gracias por su paciencia') ||
+    t.includes('su caso esta siendo atendido') ||
+    t.includes('seguimos con el expediente') ||
+    t.includes('continuara con el expediente') ||
+    t.includes('continuara la gestion') ||
+    t.includes('el perito continuara la gestion') ||
+    t.includes('el perito se pondra en contacto') ||
+    t.includes('se pondra en contacto con usted') ||
+    t.includes('el perito le llamara') ||
+    t.includes('le llamara') ||
+    t.includes('trasladamos la informacion al perito') ||
+    t.includes('finalizamos la gestion por este medio') ||
+    t.includes('finalizamos la comunicacion por este medio')
+  );
+}
+
 const CHECK_MINUTES           = Number(process.env.SCHEDULER_CHECK_MINUTES         || 15);
 const INACTIVITY_MINUTES      = Number(process.env.INACTIVITY_INTERVAL_MINUTES     || process.env.INACTIVITY_INTERVAL_HOURS * 60  || 120);
 const INACTIVITY_MAX          = Number(process.env.INACTIVITY_MAX_ATTEMPTS         || 3);
@@ -169,7 +191,13 @@ async function handleInactivity(conv, now) {
     };
 
     const respuestaIA = await procesarConIA(historial, '[SISTEMA: INACTIVIDAD]', '', valoresExcel);
-    const msgInactividad = respuestaIA.mensaje_para_usuario;
+    let msgInactividad = String(respuestaIA.mensaje_para_usuario || '').trim();
+
+    // Guard: la IA no debe generar un mensaje de cierre como recordatorio de inactividad.
+    if (!msgInactividad || looksLikeClosure(msgInactividad)) {
+      console.warn(`⚠️ Mensaje de inactividad con cierre detectado — usando fallback seguro`);
+      msgInactividad = '¿Sigue ahí? Cuando pueda, continúe con la gestión de su siniestro. Estamos a su disposición.';
+    }
 
     await adapter.sendText(waId, msgInactividad);
 

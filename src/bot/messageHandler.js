@@ -894,7 +894,7 @@ async function processMessage(waId, messageObj) {
     contextoSistema += '\n[Videoperitación]: Si el usuario no expresa dudas, no expliques funcionamiento; pregunta disponibilidad directa (mañana/tarde).';
 
     // Contexto especial para el primer mensaje de consentimiento
-    if (currentStage === 'consent' && isAffirmativeAck(text)) {
+    if ((currentStage === 'consent' || isFirstResponse) && isAffirmativeAck(text)) {
       contextoSistema += '\n[CONSENTIMIENTO CONFIRMADO]: El asegurado acaba de aceptar continuar por WhatsApp. Procede DIRECTAMENTE con la pregunta de identidad ("¿Hablo con [nombre completo]?"). PROHIBIDO repetir la presentación inicial ni el número de expediente.';
     }
 
@@ -1006,7 +1006,9 @@ async function processMessage(waId, messageObj) {
     }
 
     // ── Llamada a la IA ──────────────────────────────────────────────────
-    const consentPromptDetected = currentStage === 'consent' || isConsentPrompt(lastBotMessage);
+    // isFirstResponse cubre el caso en que DynamoDB tenga un stage incorrecto
+    // pero el usuario claramente responde por primera vez al template inicial.
+    const consentPromptDetected = currentStage === 'consent' || isConsentPrompt(lastBotMessage) || isFirstResponse;
     const consentConfirmedNow = consentPromptDetected && isAffirmativeAck(text);
     const attendeeConfirmedNow = peritoAttendeeContext && isAffirmativeAck(text);
     let respuestaIA;

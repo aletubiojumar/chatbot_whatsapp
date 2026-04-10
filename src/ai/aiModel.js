@@ -368,6 +368,7 @@ async function callGemini({ validHistory, promptFinal, contextoExtra, mensajeUsu
       responseMimeType: 'application/json',
       responseSchema: schema,
       temperature: Number(process.env.GEMINI_TEMPERATURE || 0),
+      maxOutputTokens: Number(process.env.GEMINI_MAX_OUTPUT_TOKENS || 1000),
     },
   });
 
